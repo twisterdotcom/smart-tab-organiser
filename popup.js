@@ -1,4 +1,4 @@
-// Popup script for Close Duplicate Tabs extension
+// Popup script for Organise and Deduplicate Tabs extension
 
 document.addEventListener('DOMContentLoaded', async () => {
   const closeDuplicatesBtn = document.getElementById('closeDuplicatesBtn');
@@ -113,12 +113,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     status.className = 'status info';
 
     try {
+      const settings = await chrome.storage.local.get(['preserveGroups', 'mergeIntoExisting']);
       const preserveGroups = preserveGroupsCheckbox.checked;
+      const mergeIntoExisting = settings.mergeIntoExisting === true;
       const customInstructions = customInstructionsTextarea.value.trim();
 
       const result = await chrome.runtime.sendMessage({
         action: 'organizeTabs',
         preserveGroups,
+        mergeIntoExisting,
         customInstructions
       });
 

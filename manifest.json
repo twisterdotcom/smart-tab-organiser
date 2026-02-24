@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Close Duplicate Tabs (Including Anchors)",
+  "name": "Organise and Deduplicate Tabs",
   "version": "1.0.0",
-  "description": "Close duplicate tabs, including those with different anchors. Keeps the tab with the highest anchor number.",
+  "description": "Organise tabs with AI and close duplicate tabs, including those with different anchors. Keeps the tab with the highest anchor number.",
   "permissions": [
     "tabs",
     "storage",

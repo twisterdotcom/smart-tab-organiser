@@ -1,10 +1,10 @@
-# Privacy Policy for Close Duplicate Tabs (Including Anchors)
+# Privacy Policy for Organise and Deduplicate Tabs
 
 **Last Updated:** [Date]
 
 ## Overview
 
-Close Duplicate Tabs (Including Anchors) is a browser extension that helps you manage duplicate browser tabs. This privacy policy explains how we handle your data.
+Organise and Deduplicate Tabs is a browser extension that helps you organise browser tabs with AI and manage duplicate browser tabs. This privacy policy explains how we handle your data.
 
 ## Data Collection and Storage
 
@@ -13,7 +13,8 @@ This extension stores all data locally on your device using Chrome's `chrome.sto
 
 ### What Data is Stored
 - **User Preferences**: Your extension settings (ignore query parameters, ignore hash, reload tabs option)
-- **No URLs or Tab Data**: The extension does NOT store, log, or transmit any URLs, tab information, or browsing history
+- **AI API Keys**: If you choose to use AI tab organization, your API keys (OpenAI or Claude) are stored locally on your device
+- **No URLs or Tab Data**: The extension does NOT store, log, or transmit any URLs, tab information, or browsing history (except when using AI features - see below)
 
 ### How Data is Used
 - Settings are stored locally to remember your preferences between browser sessions
@@ -30,12 +31,29 @@ This extension stores all data locally on your device using Chrome's `chrome.sto
 
 ### `storage` Permission
 - **Purpose**: Required to save your extension preferences locally
-- **Usage**: Stores only your settings (checkboxes for options)
+- **Usage**: Stores only your settings (checkboxes for options, API keys if configured)
 - **Data Storage**: All data remains on your device
+
+### `tabGroups` Permission
+- **Purpose**: Required to create and manage tab groups when using AI organization
+- **Usage**: Creates tab groups based on AI categorization
+- **Data Access**: Only accesses tabs in the current browser window
 
 ## Third-Party Services
 
-This extension does not use any third-party services, analytics, or external APIs. All functionality operates entirely within your browser.
+### AI Tab Organization (Optional)
+
+If you choose to use the AI tab organization feature, the extension will send tab titles and URLs to either:
+- **OpenAI** (api.openai.com) - when using OpenAI models
+- **Anthropic** (api.anthropic.com) - when using Claude models
+
+**What is sent**: Only tab titles and URLs are sent to the AI service for categorization. This data is sent directly to the AI provider's API using your own API key.
+
+**What is NOT sent**: No other browsing data, personal information, or analytics are transmitted.
+
+**Your API Key**: Your API key is stored locally on your device and is never shared with us or any other third party. You are responsible for managing your API key and any associated costs.
+
+**Opting Out**: You can disable AI features entirely by not configuring API keys. The duplicate tab closing feature works completely offline without any external API calls.
 
 ## Data Security
 
