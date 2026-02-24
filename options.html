@@ -3,17 +3,28 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Close Duplicate Tabs (Including Anchors) - Settings</title>
+  <title>Organise and Deduplicate Tabs - Settings</title>
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
   <div class="container">
     <header>
-      <h1>Close Duplicate Tabs</h1>
+      <h1>Organise and Deduplicate Tabs</h1>
       <p class="subtitle">Settings & Configuration</p>
     </header>
     
     <div class="content">
+      <section class="actions-section">
+        <h2>Actions</h2>
+        <div class="actions">
+          <button id="testBtn" class="btn btn-secondary">Test Duplicate Detection</button>
+          <button id="reloadAllBtn" class="btn btn-secondary">Reload All Tabs</button>
+          <button id="organizeTabsBtn" class="btn btn-primary">Organize Tabs with AI</button>
+          <button id="ungroupTabsBtn" class="btn btn-secondary">Ungroup All Tabs</button>
+        </div>
+        <div id="actionStatus" class="status"></div>
+      </section>
+      
       <section class="settings-section">
         <h2>Duplicate Detection Settings</h2>
         <p class="section-description">Configure how the extension identifies duplicate tabs.</p>
@@ -60,15 +71,6 @@
         </div>
       </section>
       
-      <section class="actions-section">
-        <h2>Actions</h2>
-        <div class="actions">
-          <button id="testBtn" class="btn btn-secondary">Test Duplicate Detection</button>
-          <button id="reloadAllBtn" class="btn btn-secondary">Reload All Tabs</button>
-        </div>
-        <div id="actionStatus" class="status"></div>
-      </section>
-      
       <section class="settings-section">
         <h2>AI Tab Organization Settings</h2>
         <p class="section-description">Configure API keys for AI-powered tab organization. Your API keys are stored locally and never shared.</p>
@@ -103,9 +105,101 @@
             </p>
           </div>
           <select id="aiProvider" class="provider-select">
-            <option value="openai">OpenAI (GPT-4o-mini)</option>
-            <option value="claude">Claude (Claude Haiku)</option>
+            <option value="openai">OpenAI</option>
+            <option value="claude">Claude</option>
           </select>
+        </div>
+        
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="openaiModel">OpenAI Model</label>
+            <p class="setting-description">
+              Choose which OpenAI model to use for tab organization.
+            </p>
+          </div>
+          <select id="openaiModel" class="provider-select">
+            <option value="gpt-5.2">GPT-5.2 (Most capable)</option>
+            <option value="gpt-5.2-pro">GPT-5.2 Pro (Smarter, more precise)</option>
+            <option value="gpt-5-mini">GPT-5 mini (Balanced, cost-efficient)</option>
+            <option value="gpt-5-nano">GPT-5 nano (Fastest, cheapest)</option>
+            <option value="gpt-5">GPT-5 (Reasoning model)</option>
+            <option value="gpt-4.1">GPT-4.1 (Smartest non-reasoning)</option>
+            <option value="gpt-4.1-mini">GPT-4.1 mini (Fast, cost-effective)</option>
+            <option value="gpt-4.1-nano">GPT-4.1 nano (Lightweight)</option>
+            <option value="gpt-4o">GPT-4o (Legacy)</option>
+            <option value="gpt-4o-mini">GPT-4o mini (Legacy)</option>
+          </select>
+        </div>
+        
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="claudeModel">Claude Model</label>
+            <p class="setting-description">
+              Choose which Claude model to use for tab organization.
+            </p>
+          </div>
+          <select id="claudeModel" class="provider-select">
+            <option value="claude-opus-4-6">Claude Opus 4.6 (Most capable)</option>
+            <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (Balanced)</option>
+            <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast, Cost-effective)</option>
+            <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku (Legacy)</option>
+            <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet (Legacy)</option>
+            <option value="claude-3-opus-20240229">Claude 3 Opus (Legacy)</option>
+            <option value="claude-3-sonnet-20240229">Claude 3 Sonnet (Legacy)</option>
+          </select>
+        </div>
+        
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="customInstructionsOptions">Custom Instructions</label>
+            <p class="setting-description">
+              Provide custom instructions for how tabs should be organized (e.g., "group by domain", "group by topic", "prioritize work-related tabs").
+              <br>These instructions will be used when organizing tabs from the options page.
+            </p>
+          </div>
+          <textarea id="customInstructionsOptions" class="custom-instructions-textarea" placeholder="e.g., 'group by domain' or 'group by topic'" rows="3"></textarea>
+        </div>
+        
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label">Preserve existing groups</label>
+            <p class="setting-description">
+              When enabled, tabs that are already in groups will be skipped during organization.
+              <br>When disabled, all tabs will be reorganized into new groups.
+            </p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="preserveGroups">
+            <span class="slider"></span>
+          </label>
+        </div>
+        
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label">Merge tabs into existing groups</label>
+            <p class="setting-description">
+              When enabled, the AI will intelligently merge ungrouped tabs into existing groups where appropriate.
+              <br>This works best when "Preserve existing groups" is also enabled. The AI will analyze existing groups and merge new tabs into them.
+            </p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="mergeIntoExisting">
+            <span class="slider"></span>
+          </label>
+        </div>
+        
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label">Organize tabs on extension icon click</label>
+            <p class="setting-description">
+              When enabled, clicking the extension icon will deduplicate tabs AND organize them using AI.
+              <br>When disabled, the extension icon will only deduplicate tabs (default behavior).
+            </p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="organizeOnClick">
+            <span class="slider"></span>
+          </label>
         </div>
       </section>
       

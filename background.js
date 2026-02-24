@@ -1,6 +1,6 @@
-// Background service worker for Close Duplicate Tabs extension
+// Background service worker for Organise and Deduplicate Tabs extension
 
-console.log('Close Duplicate Tabs extension background service worker loaded');
+console.log('Organise and Deduplicate Tabs extension background service worker loaded');
 
 // Initialize default settings on install
 chrome.runtime.onInstalled.addListener((details) => {
@@ -21,17 +21,29 @@ chrome.runtime.onInstalled.addListener((details) => {
 // Update badge when extension starts
 updateBadge();
 
-// Handle extension icon click - run deduplication directly
+// Handle extension icon click - run deduplication, then optionally organize based on settings
 chrome.action.onClicked.addListener(async () => {
   try {
-    const settings = await chrome.storage.local.get(['ignoreQuery', 'ignoreHash', 'reloadTabs']);
+    const settings = await chrome.storage.local.get([
+      'ignoreQuery', 'ignoreHash', 'reloadTabs', 'organizeOnClick',
+      'customInstructionsOptions', 'preserveGroups', 'mergeIntoExisting'
+    ]);
+    
+    // Always deduplicate first
     const ignoreQuery = settings.ignoreQuery !== false; // default to true
     const ignoreHash = settings.ignoreHash !== false; // default to true
     const reloadTabs = settings.reloadTabs === true;
+    await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs);
     
-    const result = await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs);
+    // Then organize tabs if enabled
+    if (settings.organizeOnClick === true) {
+      const preserveGroups = settings.preserveGroups !== false; // default to true
+      const mergeIntoExisting = settings.mergeIntoExisting === true;
+      const customInstructions = settings.customInstructionsOptions || '';
+      await organizeTabs(preserveGroups, mergeIntoExisting, customInstructions);
+    }
   } catch (error) {
-    console.error('Error closing duplicates on click:', error);
+    console.error('Error on extension icon click:', error);
   }
 });
 
@@ -405,24 +417,46 @@ async function reloadAllTabs() {
 }
 
 // Call OpenAI API to categorize tabs
-async function callOpenAI(apiKey, tabs, customInstructions) {
+async function callOpenAI(apiKey, model, tabs, customInstructions, existingGroups = null) {
   const tabList = tabs.map((tab, index) => {
     const title = tab.title || 'Untitled';
     const url = tab.url || '';
     return `${index + 1}. "${title}" - ${url}`;
   }).join('\n');
 
-  const basePrompt = `You are a helpful assistant that organizes browser tabs into logical groups. Analyze the following tabs and group them into categories. Return ONLY a JSON array where each object has:
+  let basePrompt = `You are a helpful assistant that organizes browser tabs into logical groups. Analyze the following tabs and group them into categories. Return ONLY a JSON array where each object has:
 - "groupName": a short descriptive name for the group (max 20 characters)
 - "tabIndices": an array of 1-based indices of tabs that belong to this group
 
 Tabs:
-${tabList}
+${tabList}`;
 
-${customInstructions ? `\nAdditional instructions: ${customInstructions}\n` : ''}
+  // Add existing groups information if merging
+  if (existingGroups && existingGroups.length > 0) {
+    const existingGroupsInfo = existingGroups.map((group, idx) => {
+      const groupTabs = group.tabs.map(t => {
+        const tabIndex = tabs.findIndex(tab => tab.id === t.id) + 1; // 1-based index
+        return tabIndex > 0 ? tabIndex : null;
+      }).filter(idx => idx !== null);
+      
+      return `Existing Group "${group.title}": Contains tabs ${groupTabs.join(', ')}`;
+    }).join('\n');
+    
+    basePrompt += `\n\nExisting Groups (merge new tabs into these groups where appropriate):
+${existingGroupsInfo}
+
+IMPORTANT: When merging tabs into existing groups, use the EXACT group name from the existing group. You can also create new groups for tabs that don't fit into existing groups.`;
+  }
+
+  basePrompt += `\n\nIMPORTANT RULES:
+- Never create a group with only one tab. All single tabs should be grouped into a group named "Misc".
+- Each group must contain at least 2 tabs (except for "Misc" which can contain multiple single tabs).
+- If you have tabs that don't fit into any logical group, put them in "Misc".
+
+${customInstructions ? `Additional instructions: ${customInstructions}\n` : ''}
 
 Return ONLY valid JSON, no other text. Example format:
-[{"groupName": "Work", "tabIndices": [1, 3, 5]}, {"groupName": "Social", "tabIndices": [2, 4]}]`;
+[{"groupName": "Work", "tabIndices": [1, 3, 5]}, {"groupName": "Social", "tabIndices": [2, 4]}, {"groupName": "Misc", "tabIndices": [6, 7]}]`;
 
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -431,7 +465,7 @@ Return ONLY valid JSON, no other text. Example format:
       'Authorization': `Bearer ${apiKey}`
     },
     body: JSON.stringify({
-      model: 'gpt-4o-mini',
+      model: model || 'gpt-5-mini',
       messages: [
         {
           role: 'user',
@@ -465,24 +499,46 @@ Return ONLY valid JSON, no other text. Example format:
 }
 
 // Call Claude API to categorize tabs
-async function callClaude(apiKey, tabs, customInstructions) {
+async function callClaude(apiKey, model, tabs, customInstructions, existingGroups = null) {
   const tabList = tabs.map((tab, index) => {
     const title = tab.title || 'Untitled';
     const url = tab.url || '';
     return `${index + 1}. "${title}" - ${url}`;
   }).join('\n');
 
-  const basePrompt = `You are a helpful assistant that organizes browser tabs into logical groups. Analyze the following tabs and group them into categories. Return ONLY a JSON array where each object has:
+  let basePrompt = `You are a helpful assistant that organizes browser tabs into logical groups. Analyze the following tabs and group them into categories. Return ONLY a JSON array where each object has:
 - "groupName": a short descriptive name for the group (max 20 characters)
 - "tabIndices": an array of 1-based indices of tabs that belong to this group
 
 Tabs:
-${tabList}
+${tabList}`;
 
-${customInstructions ? `\nAdditional instructions: ${customInstructions}\n` : ''}
+  // Add existing groups information if merging
+  if (existingGroups && existingGroups.length > 0) {
+    const existingGroupsInfo = existingGroups.map((group, idx) => {
+      const groupTabs = group.tabs.map(t => {
+        const tabIndex = tabs.findIndex(tab => tab.id === t.id) + 1; // 1-based index
+        return tabIndex > 0 ? tabIndex : null;
+      }).filter(idx => idx !== null);
+      
+      return `Existing Group "${group.title}": Contains tabs ${groupTabs.join(', ')}`;
+    }).join('\n');
+    
+    basePrompt += `\n\nExisting Groups (merge new tabs into these groups where appropriate):
+${existingGroupsInfo}
+
+IMPORTANT: When merging tabs into existing groups, use the EXACT group name from the existing group. You can also create new groups for tabs that don't fit into existing groups.`;
+  }
+
+  basePrompt += `\n\nIMPORTANT RULES:
+- Never create a group with only one tab. All single tabs should be grouped into a group named "Misc".
+- Each group must contain at least 2 tabs (except for "Misc" which can contain multiple single tabs).
+- If you have tabs that don't fit into any logical group, put them in "Misc".
+
+${customInstructions ? `Additional instructions: ${customInstructions}\n` : ''}
 
 Return ONLY valid JSON, no other text. Example format:
-[{"groupName": "Work", "tabIndices": [1, 3, 5]}, {"groupName": "Social", "tabIndices": [2, 4]}]`;
+[{"groupName": "Work", "tabIndices": [1, 3, 5]}, {"groupName": "Social", "tabIndices": [2, 4]}, {"groupName": "Misc", "tabIndices": [6, 7]}]`;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -492,7 +548,7 @@ Return ONLY valid JSON, no other text. Example format:
       'anthropic-version': '2023-06-01'
     },
     body: JSON.stringify({
-      model: 'claude-3-5-haiku-20241022',
+      model: model || 'claude-haiku-4-5-20251001',
       max_tokens: 2000,
       messages: [
         {
@@ -525,13 +581,21 @@ Return ONLY valid JSON, no other text. Example format:
 }
 
 // Organize tabs using AI
-async function organizeTabs(preserveGroups, customInstructions) {
+async function organizeTabs(preserveGroups, mergeIntoExisting, customInstructions) {
   try {
     // Get AI settings
-    const settings = await chrome.storage.local.get(['openaiKey', 'claudeKey', 'aiProvider']);
+    const settings = await chrome.storage.local.get([
+      'openaiKey', 'claudeKey', 'aiProvider',
+      'openaiModel', 'claudeModel', 'customInstructionsOptions'
+    ]);
     const provider = settings.aiProvider || 'openai';
     const openaiKey = settings.openaiKey?.trim();
     const claudeKey = settings.claudeKey?.trim();
+    const openaiModel = settings.openaiModel || 'gpt-5-mini';
+    const claudeModel = settings.claudeModel || 'claude-haiku-4-5-20251001';
+    
+    // Use custom instructions from parameter, or fall back to saved options instructions
+    const instructions = customInstructions || settings.customInstructionsOptions || '';
 
     // Validate API key
     if (provider === 'openai' && !openaiKey) {
@@ -561,32 +625,74 @@ async function organizeTabs(preserveGroups, customInstructions) {
       };
     }
 
-    // Get existing groups if preserving them
+    // Get existing groups information
     let existingGroupIds = new Set();
-    if (preserveGroups) {
+    let existingGroupsInfo = [];
+    
+    if (preserveGroups || mergeIntoExisting) {
       const groups = await chrome.tabGroups.query({ windowId: tabs[0].windowId });
-      groups.forEach(group => {
+      
+      for (const group of groups) {
         existingGroupIds.add(group.id);
-      });
+        
+        // If merging, get tabs in each existing group
+        if (mergeIntoExisting) {
+          const groupTabs = await chrome.tabs.query({ groupId: group.id });
+          existingGroupsInfo.push({
+            id: group.id,
+            title: group.title,
+            color: group.color,
+            tabs: groupTabs
+          });
+        }
+      }
     }
 
-    // Call AI API
+    // Determine which tabs to send to AI
+    // When merging, send all tabs so AI has full context
+    // When preserving (but not merging), only send ungrouped tabs
+    const tabsForAI = mergeIntoExisting 
+      ? validTabs  // Include all tabs when merging
+      : (preserveGroups 
+          ? validTabs.filter(tab => !tab.groupId || tab.groupId === -1)  // Only ungrouped if preserving
+          : validTabs);  // All tabs if not preserving
+
+    if (tabsForAI.length === 0) {
+      return {
+        success: false,
+        error: 'No tabs to organize'
+      };
+    }
+
+    // Call AI API with existing groups info if merging
     let groups;
+    const existingGroupsForAI = mergeIntoExisting ? existingGroupsInfo : null;
+    
     if (provider === 'openai') {
-      groups = await callOpenAI(openaiKey, validTabs, customInstructions);
+      groups = await callOpenAI(openaiKey, openaiModel, tabsForAI, instructions, existingGroupsForAI);
     } else {
-      groups = await callClaude(claudeKey, validTabs, customInstructions);
+      groups = await callClaude(claudeKey, claudeModel, tabsForAI, instructions, existingGroupsForAI);
     }
 
     if (!Array.isArray(groups) || groups.length === 0) {
       throw new Error('Invalid response from AI: expected array of groups');
     }
 
-    // Create tab groups
+    // Create or update tab groups
     let groupedCount = 0;
     let groupCount = 0;
     const usedTabIndices = new Set();
+    const miscTabIds = []; // Collect tabs for Misc group
+    
+    // Create a map of existing group names to group IDs for merging
+    const existingGroupMap = new Map();
+    if (mergeIntoExisting) {
+      existingGroupsInfo.forEach(group => {
+        existingGroupMap.set(group.title.toLowerCase(), group.id);
+      });
+    }
 
+    // First pass: process groups with 2+ tabs
     for (const group of groups) {
       if (!group.groupName || !Array.isArray(group.tabIndices) || group.tabIndices.length === 0) {
         continue;
@@ -596,8 +702,8 @@ async function organizeTabs(preserveGroups, customInstructions) {
       const tabIds = group.tabIndices
         .map(idx => {
           const tabIndex = idx - 1; // Convert to 0-based
-          if (tabIndex >= 0 && tabIndex < validTabs.length) {
-            return validTabs[tabIndex].id;
+          if (tabIndex >= 0 && tabIndex < tabsForAI.length) {
+            return tabsForAI[tabIndex].id;
           }
           return null;
         })
@@ -607,23 +713,81 @@ async function organizeTabs(preserveGroups, customInstructions) {
         continue;
       }
 
+      // Handle single-tab groups: add to Misc
+      if (tabIds.length === 1) {
+        miscTabIds.push(...tabIds);
+        usedTabIndices.add(tabIds[0]);
+        continue;
+      }
+
       // Mark tabs as used
       tabIds.forEach(id => usedTabIndices.add(id));
 
-      // Create group
-      const groupId = await chrome.tabs.group({ tabIds });
+      // Check if we should merge into an existing group
+      const groupNameLower = group.groupName.toLowerCase();
+      const existingGroupId = existingGroupMap.get(groupNameLower);
       
-      // Set group title and color
-      const colors = ['blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange', 'grey'];
-      const color = colors[groupCount % colors.length];
-      
-      await chrome.tabGroups.update(groupId, {
-        title: group.groupName.substring(0, 20),
-        color: color
-      });
+      let groupId;
+      if (existingGroupId) {
+        // Merge into existing group
+        const existingTabs = await chrome.tabs.query({ groupId: existingGroupId });
+        const existingTabIds = existingTabs.map(t => t.id);
+        const allTabIds = [...new Set([...existingTabIds, ...tabIds])]; // Combine and deduplicate
+        await chrome.tabs.group({ groupId: existingGroupId, tabIds: allTabIds });
+        groupId = existingGroupId;
+        groupedCount += tabIds.length; // Only count newly added tabs
+      } else {
+        // Create new group
+        groupId = await chrome.tabs.group({ tabIds });
+        
+        // Set group title and color
+        const colors = ['blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange', 'grey'];
+        const color = colors[groupCount % colors.length];
+        
+        await chrome.tabGroups.update(groupId, {
+          title: group.groupName.substring(0, 20),
+          color: color
+        });
+        
+        groupedCount += tabIds.length;
+        groupCount++;
+      }
+    }
 
-      groupedCount += tabIds.length;
-      groupCount++;
+    // Second pass: collect any remaining ungrouped tabs (shouldn't happen, but safety check)
+    const allTabIdsSet = new Set(tabsForAI.map(t => t.id));
+    const usedTabIdsSet = new Set(Array.from(usedTabIndices));
+    const remainingTabs = tabsForAI.filter(tab => 
+      !usedTabIdsSet.has(tab.id) && 
+      (!tab.groupId || tab.groupId === -1)
+    );
+    
+    if (remainingTabs.length > 0) {
+      // Add remaining tabs to Misc
+      miscTabIds.push(...remainingTabs.map(t => t.id));
+    }
+
+    // Create or merge into Misc group if we have tabs for it
+    if (miscTabIds.length > 0) {
+      const existingMiscGroupId = existingGroupMap.get('misc');
+      
+      if (existingMiscGroupId) {
+        // Merge into existing Misc group
+        const existingTabs = await chrome.tabs.query({ groupId: existingMiscGroupId });
+        const existingTabIds = existingTabs.map(t => t.id);
+        const allMiscTabIds = [...new Set([...existingTabIds, ...miscTabIds])];
+        await chrome.tabs.group({ groupId: existingMiscGroupId, tabIds: allMiscTabIds });
+        groupedCount += miscTabIds.length;
+      } else {
+        // Create new Misc group
+        const newMiscGroupId = await chrome.tabs.group({ tabIds: miscTabIds });
+        await chrome.tabGroups.update(newMiscGroupId, {
+          title: 'Misc',
+          color: 'grey'
+        });
+        groupedCount += miscTabIds.length;
+        groupCount++;
+      }
     }
 
     return {
@@ -706,7 +870,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   
   if (request.action === 'organizeTabs') {
-    organizeTabs(request.preserveGroups, request.customInstructions)
+    organizeTabs(request.preserveGroups, request.mergeIntoExisting || false, request.customInstructions)
       .then(result => sendResponse(result))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true; // Keep the message channel open for async response

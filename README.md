@@ -1,6 +1,6 @@
-# Close Duplicate Tabs (Including Anchors)
+# Organise and Deduplicate Tabs
 
-A Chrome Extension that closes duplicate tabs, including those with different anchors/hashes. When duplicates are found, it keeps the tab with the highest anchor number (e.g., the latest GitHub comment).
+A Chrome Extension that organises tabs with AI and closes duplicate tabs, including those with different anchors/hashes. When duplicates are found, it keeps the tab with the highest anchor number (e.g., the latest GitHub comment).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-coming%20soon-lightgrey)](https://chrome.google.com/webstore)
@@ -14,6 +14,7 @@ A Chrome Extension that closes duplicate tabs, including those with different an
 
 ## ✨ Key Features
 
+- **AI-Powered Tab Organization**: Organise your tabs into logical groups using OpenAI (GPT-5.2, GPT-5 mini, GPT-4.1, and more) or Claude (Claude Opus 4.6, Sonnet 4.6, Haiku 4.5, and more)
 - **Smart Duplicate Detection**: Detects duplicate tabs even when they have different anchors/hashes
 - **Case-Insensitive Matching**: Handles URLs with different cases (e.g., `Expensify` vs `expensify`)
 - **Works with Suspended Tabs**: Detects duplicates even in inactive tabs (Arc browser compatible)
@@ -23,7 +24,11 @@ A Chrome Extension that closes duplicate tabs, including those with different an
   - Ignore query parameters when comparing URLs
   - Ignore hash when comparing (but still uses it to determine which tab to keep)
   - Option to reload remaining tabs after closing duplicates
+  - Custom instructions for AI tab organization
+  - Choose between multiple AI models
+  - Toggle extension icon behavior (organize tabs vs close duplicates)
 - **Reload All Tabs**: Quick button to reload all tabs in the current window
+- **Tab Grouping**: Create and manage tab groups with AI assistance
 
 ## Example Use Case
 
@@ -71,6 +76,8 @@ The extension will be available on the Chrome Web Store soon. Check back for upd
 
 ## How to Use
 
+### Closing Duplicate Tabs
+
 1. Click the extension icon in your Chrome toolbar
 2. Configure your preferences:
    - **Ignore query parameters**: When enabled, URLs with different query strings are treated as duplicates
@@ -78,6 +85,15 @@ The extension will be available on the Chrome Web Store soon. Check back for upd
    - **Reload remaining tabs**: When enabled, remaining tabs will be reloaded after closing duplicates
 3. Click "Close Duplicates" to remove duplicate tabs
 4. Use "Reload All Tabs" to refresh all tabs in the current window
+
+### AI Tab Organization
+
+1. Go to the extension options page (right-click extension icon → Options)
+2. Configure your AI API keys (OpenAI or Claude)
+3. Select your preferred model and provider
+4. Optionally add custom instructions (e.g., "group by domain" or "group by topic")
+5. Click "Organize Tabs with AI" in the options page, or use the "Organize Tabs" button in the popup
+6. The AI will analyze your tabs and create logical groups automatically
 
 ## Development
 
