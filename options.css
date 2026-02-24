@@ -12,11 +12,17 @@ body {
 }
 
 .container {
-  max-width: 800px;
+  max-width: min(1100px, 96vw);
   margin: 0 auto;
-  padding: 40px 20px;
+  padding: 40px 24px;
   background: white;
   min-height: 100vh;
+}
+
+@media (min-width: 1400px) {
+  .container {
+    max-width: min(1400px, 96vw);
+  }
 }
 
 header {
@@ -41,6 +47,34 @@ h1 {
   display: flex;
   flex-direction: column;
   gap: 30px;
+}
+
+@media (min-width: 1200px) {
+  .content {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "actions actions"
+      "duplicate ai"
+      "info info";
+    align-items: start;
+  }
+
+  .actions-section {
+    grid-area: actions;
+  }
+
+  .settings-section:nth-child(2) {
+    grid-area: duplicate;
+  }
+
+  .settings-section:nth-child(3) {
+    grid-area: ai;
+  }
+
+  .info-section {
+    grid-area: info;
+  }
 }
 
 section {
@@ -258,3 +292,71 @@ footer {
   font-size: 13px;
 }
 
+.api-key-input {
+  min-width: 200px;
+  width: 100%;
+  max-width: 400px;
+  padding: 10px 12px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: 'Monaco', 'Courier New', monospace;
+  background: white;
+  color: #333;
+}
+
+.api-key-input:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+}
+
+.provider-select {
+  min-width: 160px;
+  width: 100%;
+  max-width: 280px;
+  padding: 10px 12px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  font-size: 14px;
+  background: white;
+  color: #333;
+  cursor: pointer;
+}
+
+.provider-select:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+}
+
+.setting-item--stacked {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.setting-item--stacked .custom-instructions-textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: 10px 12px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.setting-item--stacked .custom-instructions-textarea:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+}
+
+.setting-description a {
+  color: #007bff;
+  text-decoration: none;
+}
+
+.setting-description a:hover {
+  text-decoration: underline;
+}
