@@ -417,7 +417,7 @@ async function reloadAllTabs() {
 }
 
 // Call OpenAI API to categorize tabs
-async function callOpenAI(apiKey, model, tabs, customInstructions, existingGroups = null) {
+async function callOpenAI(apiKey, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null) {
   const tabList = tabs.map((tab, index) => {
     const title = tab.title || 'Untitled';
     const url = tab.url || '';
@@ -448,10 +448,17 @@ ${existingGroupsInfo}
 IMPORTANT: When merging tabs into existing groups, use the EXACT group name from the existing group. You can also create new groups for tabs that don't fit into existing groups.`;
   }
 
+  if (splitTabIndices && splitTabIndices.length > 0) {
+    basePrompt += `\n\nSIDE-BY-SIDE SPLITS (these tab pairs/groups MUST stay together in the SAME group - never separate them):
+${splitTabIndices.map((indices, i) => `- Split ${i + 1}: tabs ${indices.join(', ')}`).join('\n')}`;
+  }
+
   basePrompt += `\n\nIMPORTANT RULES:
 - Never create a group with only one tab. All single tabs should be grouped into a group named "Misc".
 - Each group must contain at least 2 tabs (except for "Misc" which can contain multiple single tabs).
 - If you have tabs that don't fit into any logical group, put them in "Misc".
+- NEVER add or remove any tabs to the group named "PINNED" or "BOOKMARKS". Leave these groups exactly as they are.
+- Tabs in a side-by-side split must be placed in the SAME group together. Never separate them or unsplit them.
 
 ${customInstructions ? `Additional instructions: ${customInstructions}\n` : ''}
 
@@ -473,7 +480,7 @@ Return ONLY valid JSON, no other text. Example format:
         }
       ],
       temperature: 0.3,
-      max_tokens: 2000
+      max_completion_tokens: 5000
     })
   });
 
@@ -499,7 +506,7 @@ Return ONLY valid JSON, no other text. Example format:
 }
 
 // Call Claude API to categorize tabs
-async function callClaude(apiKey, model, tabs, customInstructions, existingGroups = null) {
+async function callClaude(apiKey, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null) {
   const tabList = tabs.map((tab, index) => {
     const title = tab.title || 'Untitled';
     const url = tab.url || '';
@@ -530,10 +537,17 @@ ${existingGroupsInfo}
 IMPORTANT: When merging tabs into existing groups, use the EXACT group name from the existing group. You can also create new groups for tabs that don't fit into existing groups.`;
   }
 
+  if (splitTabIndices && splitTabIndices.length > 0) {
+    basePrompt += `\n\nSIDE-BY-SIDE SPLITS (these tab pairs/groups MUST stay together in the SAME group - never separate them):
+${splitTabIndices.map((indices, i) => `- Split ${i + 1}: tabs ${indices.join(', ')}`).join('\n')}`;
+  }
+
   basePrompt += `\n\nIMPORTANT RULES:
 - Never create a group with only one tab. All single tabs should be grouped into a group named "Misc".
 - Each group must contain at least 2 tabs (except for "Misc" which can contain multiple single tabs).
 - If you have tabs that don't fit into any logical group, put them in "Misc".
+- NEVER add or remove any tabs to the group named "PINNED" or "BOOKMARKS". Leave these groups exactly as they are.
+- Tabs in a side-by-side split must be placed in the SAME group together. Never separate them or unsplit them.
 
 ${customInstructions ? `Additional instructions: ${customInstructions}\n` : ''}
 
@@ -549,7 +563,7 @@ Return ONLY valid JSON, no other text. Example format:
     },
     body: JSON.stringify({
       model: model || 'claude-haiku-4-5-20251001',
-      max_tokens: 2000,
+      max_tokens: 5000,
       messages: [
         {
           role: 'user',
@@ -664,18 +678,52 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
       };
     }
 
+    // Build split view info: tabs with same splitViewId must stay together (Chrome 140+)
+    const splitMap = new Map();
+    tabsForAI.forEach((tab, index) => {
+      const svId = tab.splitViewId;
+      if (svId !== undefined && svId !== -1) {
+        if (!splitMap.has(svId)) splitMap.set(svId, []);
+        splitMap.get(svId).push(index + 1); // 1-based index for AI
+      }
+    });
+    const splitTabIndices = Array.from(splitMap.values()).filter(indices => indices.length >= 2);
+
     // Call AI API with existing groups info if merging
     let groups;
     const existingGroupsForAI = mergeIntoExisting ? existingGroupsInfo : null;
     
     if (provider === 'openai') {
-      groups = await callOpenAI(openaiKey, openaiModel, tabsForAI, instructions, existingGroupsForAI);
+      groups = await callOpenAI(openaiKey, openaiModel, tabsForAI, instructions, existingGroupsForAI, splitTabIndices);
     } else {
-      groups = await callClaude(claudeKey, claudeModel, tabsForAI, instructions, existingGroupsForAI);
+      groups = await callClaude(claudeKey, claudeModel, tabsForAI, instructions, existingGroupsForAI, splitTabIndices);
     }
 
     if (!Array.isArray(groups) || groups.length === 0) {
       throw new Error('Invalid response from AI: expected array of groups');
+    }
+
+    // Ensure split tabs stay together: merge any split that AI put in different groups
+    for (const splitIndices of splitTabIndices) {
+      const indexToGroup = new Map();
+      groups.forEach((g, i) => {
+        (g.tabIndices || []).forEach(idx => indexToGroup.set(idx, i));
+      });
+      const groupsWithSplitTabs = [...new Set(
+        splitIndices.map(idx => indexToGroup.get(idx)).filter(i => i !== undefined)
+      )];
+      if (groupsWithSplitTabs.length > 1) {
+        const targetIdx = groupsWithSplitTabs[0];
+        const targetGroup = groups[targetIdx];
+        for (const idx of splitIndices) {
+          if (!targetGroup.tabIndices.includes(idx)) {
+            targetGroup.tabIndices.push(idx);
+          }
+        }
+        for (const gi of groupsWithSplitTabs.slice(1)) {
+          groups[gi].tabIndices = (groups[gi].tabIndices || []).filter(i => !splitIndices.includes(i));
+        }
+      }
     }
 
     // Create or update tab groups
