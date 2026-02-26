@@ -54,26 +54,31 @@ h1 {
     display: grid;
     grid-template-columns: 1fr 1fr;
     grid-template-areas:
+      "info info"
       "actions actions"
-      "duplicate ai"
-      "info info";
+      "duplicate pinned"
+      "ai ai";
     align-items: start;
+  }
+
+  .info-section {
+    grid-area: info;
   }
 
   .actions-section {
     grid-area: actions;
   }
 
-  .settings-section:nth-child(2) {
+  .settings-section:nth-child(3) {
     grid-area: duplicate;
   }
 
-  .settings-section:nth-child(3) {
-    grid-area: ai;
+  .settings-section:nth-child(4) {
+    grid-area: pinned;
   }
 
-  .info-section {
-    grid-area: info;
+  .settings-section--ai {
+    grid-area: ai;
   }
 }
 
@@ -359,4 +364,27 @@ footer {
 
 .setting-description a:hover {
   text-decoration: underline;
+}
+
+/* AI section uses full width and two columns for settings */
+.settings-section--ai {
+  display: block;
+}
+
+@media (min-width: 900px) {
+  .settings-section--ai {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 15px;
+  }
+
+  .settings-section--ai h2,
+  .settings-section--ai .section-description,
+  .settings-section--ai .setting-item--stacked {
+    grid-column: 1 / -1;
+  }
+
+  .settings-section--ai .setting-item {
+    margin-bottom: 0;
+  }
 }

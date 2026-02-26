@@ -14,36 +14,178 @@ chrome.runtime.onInstalled.addListener((details) => {
   } else if (details.reason === 'update') {
     console.log('Extension updated');
   }
-  // Update badge on install/update
+  // Context menu: right-click extension icon
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: 'dedupe-and-organize',
+      title: 'Deduplicate and organize tabs with AI',
+      contexts: ['action']
+    });
+    chrome.contextMenus.create({
+      id: 'dedupe-and-tidy-pinned',
+      title: 'Deduplicate and tidy PINNED',
+      contexts: ['action']
+    });
+    chrome.contextMenus.create({
+      id: 'edit-prompt',
+      title: 'Edit prompt',
+      contexts: ['action']
+    });
+  });
+  // Update badge and context menu state on install/update
   updateBadge();
 });
 
 // Update badge when extension starts
 updateBadge();
 
-// Handle extension icon click - run deduplication, then optionally organize based on settings
-chrome.action.onClicked.addListener(async () => {
+let isOrganizing = false;
+let loadingSpinnerInterval = null;
+
+// Circle quadrant spinner – visible, symmetrical, well-centered in badge
+const SPINNER_CHARS = ['◐', '◓', '◑', '◒'];
+let spinnerIndex = 0;
+
+// Animated loading spinner badge
+function startLoadingSpinner() {
+  chrome.action.setBadgeBackgroundColor({ color: '#2196F3' });
+  const tick = () => {
+    chrome.action.setBadgeText({ text: SPINNER_CHARS[spinnerIndex] });
+    spinnerIndex = (spinnerIndex + 1) % SPINNER_CHARS.length;
+  };
+  tick(); // show first frame immediately
+  loadingSpinnerInterval = setInterval(tick, 80); // ~3 rotations/sec with 4 frames
+}
+
+function stopLoadingSpinner() {
+  if (loadingSpinnerInterval) {
+    clearInterval(loadingSpinnerInterval);
+    loadingSpinnerInterval = null;
+  }
+  chrome.action.setBadgeText({ text: '' });
+}
+
+// Run organize with badge + notification feedback (for icon/context menu/command)
+async function runOrganizeWithFeedback() {
+  if (isOrganizing) return;
+  isOrganizing = true;
+
+  // Show animated spinner badge
+  startLoadingSpinner();
+  chrome.action.setTitle({ title: 'Organizing tabs...' });
+  chrome.contextMenus.update('dedupe-and-organize', { enabled: false }).catch(() => {});
+
+  const settings = await chrome.storage.local.get([
+    'ignoreQuery', 'ignoreHash', 'reloadTabs',
+    'customInstructionsOptions', 'preserveGroups', 'mergeIntoExisting'
+  ]);
+  // Dedupe first, then tidy PINNED (move non-pinned URLs out, reorder), then organize with AI
+  const ignoreQuery = settings.ignoreQuery !== false;
+  const ignoreHash = settings.ignoreHash !== false;
+  const reloadTabs = settings.reloadTabs === true;
+  await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs);
+  await dedupeAndTidyPinned(ignoreQuery, ignoreHash);
+
+  const preserveGroups = settings.preserveGroups !== false;
+  const mergeIntoExisting = settings.mergeIntoExisting === true;
+  const customInstructions = settings.customInstructionsOptions || '';
+
+  chrome.notifications.create('organize-progress', {
+    type: 'basic',
+    iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+    title: 'Organizing tabs',
+    message: 'AI is organizing your tabs...'
+  });
+
+  try {
+    const result = await organizeTabs(preserveGroups, mergeIntoExisting, customInstructions);
+    chrome.notifications.clear('organize-progress');
+    chrome.notifications.create({
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+      title: 'Tabs organized',
+      message: `Organized ${result.groupedCount} tab(s) into ${result.groupCount} group(s).`
+    });
+  } catch (err) {
+    chrome.notifications.clear('organize-progress');
+    chrome.notifications.create({
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+      title: 'Organization failed',
+      message: err.message || 'An error occurred'
+    });
+  } finally {
+    isOrganizing = false;
+    stopLoadingSpinner();
+    chrome.action.setTitle({ title: 'Dedupe and tidy PINNED (left-click)' }).catch(() => {});
+    chrome.contextMenus.update('dedupe-and-organize', { enabled: true }).catch(() => {});
+    updateBadge(); // Restore duplicate-count badge
+  }
+}
+
+// Deduplicate then tidy PINNED group (move non-pinned URLs out to end, order rest by list)
+async function runDedupeAndTidyPinned() {
   try {
     const settings = await chrome.storage.local.get([
-      'ignoreQuery', 'ignoreHash', 'reloadTabs', 'organizeOnClick',
-      'customInstructionsOptions', 'preserveGroups', 'mergeIntoExisting'
+      'ignoreQuery', 'ignoreHash', 'reloadTabs'
     ]);
-    
-    // Always deduplicate first
-    const ignoreQuery = settings.ignoreQuery !== false; // default to true
-    const ignoreHash = settings.ignoreHash !== false; // default to true
+    const ignoreQuery = settings.ignoreQuery !== false;
+    const ignoreHash = settings.ignoreHash !== false;
     const reloadTabs = settings.reloadTabs === true;
     await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs);
-    
-    // Then organize tabs if enabled
-    if (settings.organizeOnClick === true) {
-      const preserveGroups = settings.preserveGroups !== false; // default to true
-      const mergeIntoExisting = settings.mergeIntoExisting === true;
-      const customInstructions = settings.customInstructionsOptions || '';
-      await organizeTabs(preserveGroups, mergeIntoExisting, customInstructions);
+    const result = await dedupeAndTidyPinned(ignoreQuery, ignoreHash);
+    if (result.success) {
+      chrome.notifications.create({
+        type: 'basic',
+        iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+        title: 'PINNED tidied',
+        message: result.message || 'Moved non-PINNED tabs to the end.'
+      });
+    } else {
+      chrome.notifications.create({
+        type: 'basic',
+        iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+        title: 'Tidy PINNED failed',
+        message: result.error || 'An error occurred'
+      });
     }
+    updateBadge();
+  } catch (error) {
+    console.error('Error in runDedupeAndTidyPinned:', error);
+    chrome.notifications.create({
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+      title: 'Tidy PINNED failed',
+      message: error.message || 'An error occurred'
+    });
+    updateBadge();
+  }
+}
+
+// Handle extension icon left click - dedupe then tidy PINNED (same as "Deduplicate and tidy PINNED")
+chrome.action.onClicked.addListener(async () => {
+  try {
+    await runDedupeAndTidyPinned();
   } catch (error) {
     console.error('Error on extension icon click:', error);
+  }
+});
+
+// Right-click extension icon -> context menu
+chrome.contextMenus.onClicked.addListener((info) => {
+  if (info.menuItemId === 'dedupe-and-organize') {
+    runOrganizeWithFeedback();
+  } else if (info.menuItemId === 'dedupe-and-tidy-pinned') {
+    runDedupeAndTidyPinned();
+  } else if (info.menuItemId === 'edit-prompt') {
+    chrome.tabs.create({ url: chrome.runtime.getURL('options.html#custom-instructions') });
+  }
+});
+
+// Keyboard shortcut: Cmd+Shift+O (Mac) / Ctrl+Shift+O (Windows)
+chrome.commands.onCommand.addListener((command) => {
+  if (command === 'organize-tabs') {
+    runOrganizeWithFeedback();
   }
 });
 
@@ -101,16 +243,14 @@ async function countDuplicates() {
   }
 }
 
-// Update the badge text
+// Update the badge text and context menu enabled state
 async function updateBadge() {
   const duplicateCount = await countDuplicates();
   
   if (duplicateCount > 0) {
-    // Set badge text (max 4 characters, Chrome will show "99+" for larger numbers)
     chrome.action.setBadgeText({ text: duplicateCount.toString() });
-    chrome.action.setBadgeBackgroundColor({ color: '#FF4444' }); // Red badge
+    chrome.action.setBadgeBackgroundColor({ color: '#FF4444' });
   } else {
-    // Clear badge when no duplicates
     chrome.action.setBadgeText({ text: '' });
   }
 }
@@ -416,6 +556,117 @@ async function reloadAllTabs() {
   }
 }
 
+// Get normalized PINNED URL entries from storage (uses current ignoreQuery/ignoreHash).
+// Lines starting with * are prefix matches (tab URL must start with the rest); others are exact matches.
+function getPinnedEntries(list, ignoreQuery, ignoreHash) {
+  const lines = Array.isArray(list) ? list : (typeof list === 'string' ? list.split('\n').map(s => s.trim()).filter(Boolean) : []);
+  const entries = [];
+  const exactSet = new Set();
+  for (const line of lines) {
+    const isPrefix = line.startsWith('*');
+    const urlPart = (isPrefix ? line.slice(1).trim() : line).trim();
+    if (!urlPart) continue;
+    const normalized = normalizeUrl(urlPart, ignoreQuery, ignoreHash);
+    if (normalized.startsWith('__invalid__') || normalized.startsWith('__error__')) continue;
+    entries.push({ type: isPrefix ? 'prefix' : 'exact', pattern: normalized });
+    if (!isPrefix) exactSet.add(normalized);
+  }
+  const prefixPatterns = entries.filter(e => e.type === 'prefix').map(e => e.pattern);
+  return { entries, exactSet, prefixPatterns };
+}
+
+function tabMatchesPinnedList(tabNorm, { exactSet, prefixPatterns }) {
+  return exactSet.has(tabNorm) || prefixPatterns.some(p => tabNorm.startsWith(p));
+}
+
+function getPinnedOrderIndex(tabNorm, entries) {
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (e.type === 'exact' && tabNorm === e.pattern) return i;
+    if (e.type === 'prefix' && tabNorm.startsWith(e.pattern)) return i;
+  }
+  return entries.length;
+}
+
+async function getPinnedUrlSetAndOrder(ignoreQuery, ignoreHash) {
+  const stored = await chrome.storage.local.get(['pinnedUrls']);
+  const raw = stored.pinnedUrls;
+  return getPinnedEntries(raw || [], ignoreQuery, ignoreHash);
+}
+
+// Deduplicate then tidy PINNED: move tabs not in the PINNED URL list out to end, order the rest by list.
+async function dedupeAndTidyPinned(ignoreQuery, ignoreHash) {
+  try {
+    const tabs = await chrome.tabs.query({ currentWindow: true });
+    if (!tabs.length) {
+      return { success: false, error: 'No tabs in window' };
+    }
+    const windowId = tabs[0].windowId;
+    const { entries, exactSet, prefixPatterns } = await getPinnedUrlSetAndOrder(ignoreQuery, ignoreHash);
+    const groups = await chrome.tabGroups.query({ windowId });
+    const pinnedGroup = groups.find(g => (g.title || '').trim().toUpperCase() === 'PINNED');
+    if (!pinnedGroup) {
+      return { success: true, message: 'No PINNED group found; nothing to tidy.' };
+    }
+    const pinnedTabs = await chrome.tabs.query({ groupId: pinnedGroup.id });
+    if (pinnedTabs.length === 0) {
+      return { success: true, message: 'PINNED group is empty.' };
+    }
+    if (entries.length === 0) {
+      return { success: true, message: 'No PINNED URLs configured; PINNED group unchanged.' };
+    }
+
+    const toRemove = [];
+    const toKeep = [];
+    for (const tab of pinnedTabs) {
+      const url = tab.url || '';
+      if (!isValidUrl(url)) {
+        toKeep.push(tab);
+        continue;
+      }
+      const norm = normalizeUrl(url, ignoreQuery, ignoreHash);
+      if (tabMatchesPinnedList(norm, { exactSet, prefixPatterns })) {
+        toKeep.push(tab);
+      } else {
+        toRemove.push(tab);
+      }
+    }
+
+    for (const tab of toRemove) {
+      await chrome.tabs.ungroup([tab.id]);
+      await chrome.tabs.move(tab.id, { index: -1 });
+    }
+
+    if (toKeep.length === 0) {
+      return {
+        success: true,
+        message: toRemove.length > 0 ? `Moved ${toRemove.length} tab(s) out of PINNED to the end.` : 'PINNED group unchanged.'
+      };
+    }
+
+    toKeep.sort((a, b) => {
+      const na = normalizeUrl(a.url || '', ignoreQuery, ignoreHash);
+      const nb = normalizeUrl(b.url || '', ignoreQuery, ignoreHash);
+      return getPinnedOrderIndex(na, entries) - getPinnedOrderIndex(nb, entries);
+    });
+    const startIndex = Math.min(...toKeep.map(t => t.index));
+    for (let i = 0; i < toKeep.length; i++) {
+      await chrome.tabs.move(toKeep[i].id, { index: startIndex + i });
+    }
+
+    const moved = toRemove.length;
+    return {
+      success: true,
+      message: moved > 0
+        ? `Moved ${moved} tab(s) out of PINNED to the end and reordered PINNED.`
+        : 'Reordered PINNED group to match your list.'
+    };
+  } catch (error) {
+    console.error('Error in dedupeAndTidyPinned:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 // Call OpenAI API to categorize tabs
 async function callOpenAI(apiKey, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null) {
   const tabList = tabs.map((tab, index) => {
@@ -479,7 +730,6 @@ Return ONLY valid JSON, no other text. Example format:
           content: basePrompt
         }
       ],
-      temperature: 0.3,
       max_completion_tokens: 5000
     })
   });
@@ -595,6 +845,8 @@ Return ONLY valid JSON, no other text. Example format:
 }
 
 // Organize tabs using AI
+const ALWAYS_PRESERVED_GROUP_NAMES = ['PINNED', 'BOOKMARKS'];
+
 async function organizeTabs(preserveGroups, mergeIntoExisting, customInstructions) {
   try {
     // Get AI settings
@@ -639,18 +891,33 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
       };
     }
 
-    // Get existing groups information
+    // Always know which groups are PINNED / BOOKMARKS so we never touch them (regardless of settings)
+    const allGroups = await chrome.tabGroups.query({ windowId: tabs[0].windowId });
+    const pinnedGroupIds = new Set(
+      allGroups.filter(g => (g.title || '').trim().toUpperCase() === 'PINNED').map(g => g.id)
+    );
+    const bookmarksGroupIds = new Set(
+      allGroups.filter(g => (g.title || '').trim().toUpperCase() === 'BOOKMARKS').map(g => g.id)
+    );
+    const alwaysPreservedGroupIds = new Set([...pinnedGroupIds, ...bookmarksGroupIds]);
+
+    // When user has configured PINNED URLs, only tabs in that list stay in PINNED; others can be reorganized by AI
+    const urlSettings = await chrome.storage.local.get(['pinnedUrls', 'ignoreQuery', 'ignoreHash']);
+    const ignoreQueryUrl = urlSettings.ignoreQuery !== false;
+    const ignoreHashUrl = urlSettings.ignoreHash !== false;
+    const pinnedData = await getPinnedUrlSetAndOrder(ignoreQueryUrl, ignoreHashUrl);
+    const usePinnedList = pinnedData.entries.length > 0;
+
+    // Get existing groups information (for preserve/merge settings — applies to other groups only)
     let existingGroupIds = new Set();
     let existingGroupsInfo = [];
     
     if (preserveGroups || mergeIntoExisting) {
-      const groups = await chrome.tabGroups.query({ windowId: tabs[0].windowId });
-      
-      for (const group of groups) {
+      for (const group of allGroups) {
         existingGroupIds.add(group.id);
         
-        // If merging, get tabs in each existing group
-        if (mergeIntoExisting) {
+        // If merging, get tabs in each existing group (exclude always-preserved so AI won't merge into them)
+        if (mergeIntoExisting && !alwaysPreservedGroupIds.has(group.id)) {
           const groupTabs = await chrome.tabs.query({ groupId: group.id });
           existingGroupsInfo.push({
             id: group.id,
@@ -665,11 +932,23 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     // Determine which tabs to send to AI
     // When merging, send all tabs so AI has full context
     // When preserving (but not merging), only send ungrouped tabs
-    const tabsForAI = mergeIntoExisting 
+    // Always exclude tabs in PINNED / BOOKMARKS — those groups are never reorganized
+    let tabsForAI = mergeIntoExisting 
       ? validTabs  // Include all tabs when merging
       : (preserveGroups 
           ? validTabs.filter(tab => !tab.groupId || tab.groupId === -1)  // Only ungrouped if preserving
           : validTabs);  // All tabs if not preserving
+
+    // Always exclude tabs in BOOKMARKS. For PINNED: exclude only if tab URL matches user's PINNED list (exact or prefix); if no list, exclude all.
+    tabsForAI = tabsForAI.filter(tab => {
+      if (bookmarksGroupIds.has(tab.groupId)) return false;
+      if (pinnedGroupIds.has(tab.groupId)) {
+        if (!usePinnedList) return false;
+        const norm = normalizeUrl(tab.url || '', ignoreQueryUrl, ignoreHashUrl);
+        return !tabMatchesPinnedList(norm, pinnedData);
+      }
+      return true;
+    });
 
     if (tabsForAI.length === 0) {
       return {
@@ -734,11 +1013,18 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     
     // Create a map of existing group names to group IDs for merging
     const existingGroupMap = new Map();
+    const usedColors = new Set();
     if (mergeIntoExisting) {
       existingGroupsInfo.forEach(group => {
         existingGroupMap.set(group.title.toLowerCase(), group.id);
+        if (group.color) usedColors.add(group.color);
       });
     }
+    // Also consider existing groups when preserving (we might create new ones alongside)
+    const allExistingGroups = await chrome.tabGroups.query({ windowId: tabs[0].windowId });
+    allExistingGroups.forEach(g => { if (g.color) usedColors.add(g.color); });
+
+    const allColors = ['blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange', 'grey'];
 
     // First pass: process groups with 2+ tabs
     for (const group of groups) {
@@ -788,9 +1074,10 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
         // Create new group
         groupId = await chrome.tabs.group({ tabIds });
         
-        // Set group title and color
-        const colors = ['blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange', 'grey'];
-        const color = colors[groupCount % colors.length];
+        // Pick a color not yet used; if all used, cycle through
+        const available = allColors.filter(c => !usedColors.has(c));
+        const color = available.length > 0 ? available[0] : allColors[groupCount % allColors.length];
+        usedColors.add(color);
         
         await chrome.tabGroups.update(groupId, {
           title: group.groupName.substring(0, 20),
@@ -852,7 +1139,7 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
   }
 }
 
-// Ungroup all tabs
+// Ungroup all tabs (always skips groups named PINNED and BOOKMARKS)
 async function ungroupTabs() {
   try {
     const tabs = await chrome.tabs.query({ currentWindow: true });
@@ -863,12 +1150,17 @@ async function ungroupTabs() {
       };
     }
 
-    // Get all groups in current window
+    // Get all groups in current window; never ungroup PINNED or BOOKMARKS
     const groups = await chrome.tabGroups.query({ windowId: tabs[0].windowId });
-    
-    // Ungroup all tabs
+    const alwaysPreservedIds = new Set(
+      groups
+        .filter(g => ALWAYS_PRESERVED_GROUP_NAMES.includes((g.title || '').trim().toUpperCase()))
+        .map(g => g.id)
+    );
+
     let ungroupedCount = 0;
     for (const group of groups) {
+      if (alwaysPreservedIds.has(group.id)) continue;
       const groupTabs = await chrome.tabs.query({ groupId: group.id });
       if (groupTabs.length > 0) {
         await chrome.tabs.ungroup(groupTabs.map(t => t.id));
@@ -929,5 +1221,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .then(result => sendResponse(result))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true; // Keep the message channel open for async response
+  }
+  
+  if (request.action === 'dedupeAndTidyPinned') {
+    (async () => {
+      const settings = await chrome.storage.local.get(['ignoreQuery', 'ignoreHash', 'reloadTabs']);
+      const ignoreQuery = settings.ignoreQuery !== false;
+      const ignoreHash = settings.ignoreHash !== false;
+      const reloadTabs = settings.reloadTabs === true;
+      await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs);
+      const result = await dedupeAndTidyPinned(ignoreQuery, ignoreHash);
+      sendResponse(result);
+    })();
+    return true;
   }
 });

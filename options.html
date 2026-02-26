@@ -14,12 +14,22 @@
     </header>
     
     <div class="content">
+      <section class="info-section">
+        <h2>How to Use</h2>
+        <div class="info-content">
+          <p><strong>Click the extension icon</strong> to deduplicate tabs and tidy the PINNED group (move non-PINNED URLs to the end, reorder PINNED to match your list). Duplicate detection uses your settings (e.g. keep highest anchor). The icon badge shows how many duplicate tabs are open.</p>
+          <p><strong>Three ways to run:</strong> (1) Click the extension icon to deduplicate and tidy PINNED. (2) Right-click → "Deduplicate and organize tabs with AI" to dedupe and reorganize with AI. (3) Right-click → "Deduplicate and tidy PINNED" does the same as the icon click.</p>
+          <p><strong>AI Tab Organization:</strong> Use "Organize tabs with AI" from the context menu, keyboard shortcut (⌘+Shift+O / Ctrl+Shift+O), or "Organize Tabs" in the popup. Configure your API keys below to enable it.</p>
+        </div>
+      </section>
+
       <section class="actions-section">
         <h2>Actions</h2>
         <div class="actions">
           <button id="testBtn" class="btn btn-secondary">Test Duplicate Detection</button>
           <button id="reloadAllBtn" class="btn btn-secondary">Reload All Tabs</button>
           <button id="organizeTabsBtn" class="btn btn-primary">Organize Tabs with AI</button>
+          <button id="tidyPinnedBtn" class="btn btn-secondary">Deduplicate and tidy PINNED</button>
           <button id="ungroupTabsBtn" class="btn btn-secondary">Ungroup All Tabs</button>
         </div>
         <div id="actionStatus" class="status"></div>
@@ -72,6 +82,22 @@
       </section>
       
       <section class="settings-section">
+        <h2>PINNED group</h2>
+        <p class="section-description">Define which URLs belong in the PINNED tab group and in what order. When you run "Deduplicate and tidy PINNED" or organize with AI, any tab in the PINNED group that is not in this list will be moved out (to the end or into another group).</p>
+        
+        <div class="setting-item setting-item--stacked">
+          <div class="setting-info">
+            <label class="setting-label" for="pinnedUrls">PINNED URLs (one per line, order = tab order)</label>
+            <p class="setting-description">
+              <strong>Exact match</strong> (no prefix): only that exact URL stays in PINNED (after normalizing query/hash per your duplicate settings).<br>
+              <strong>Prefix match</strong>: start a line with <code>*</code> so any tab whose URL starts with the rest of the line stays in PINNED (e.g. <code>*https://mail.google.com/mail/u/0</code> keeps inbox, drafts, etc.; <code>*https://chatgpt.com/</code> keeps any ChatGPT page; <code>*https://app.slack.com/client/E047TPA624F</code> keeps that workspace and any channel). Leave empty to keep all current PINNED tabs as-is when tidying.
+            </p>
+          </div>
+          <textarea id="pinnedUrls" class="custom-instructions-textarea" placeholder="*https://mail.google.com/mail/u/0&#10;*https://app.slack.com/client/E047TPA624F&#10;https://staging.new.expensify.com/home&#10;*https://chatgpt.com/" rows="5"></textarea>
+        </div>
+      </section>
+      
+      <section class="settings-section settings-section--ai">
         <h2>AI Tab Organization Settings</h2>
         <p class="section-description">Configure API keys for AI-powered tab organization. Your API keys are stored locally and never shared.</p>
         
@@ -149,7 +175,7 @@
           </select>
         </div>
         
-        <div class="setting-item setting-item--stacked">
+        <div id="custom-instructions" class="setting-item setting-item--stacked">
           <div class="setting-info">
             <label class="setting-label" for="customInstructionsOptions">Custom Instructions</label>
             <p class="setting-description">
@@ -166,6 +192,7 @@
             <p class="setting-description">
               When enabled, tabs that are already in groups will be skipped during organization.
               <br>When disabled, all tabs will be reorganized into new groups.
+              <br><strong>Groups named "PINNED" and "BOOKMARKS" are always preserved</strong>, regardless of this setting.
             </p>
           </div>
           <label class="switch">
@@ -180,6 +207,7 @@
             <p class="setting-description">
               When enabled, the AI will intelligently merge ungrouped tabs into existing groups where appropriate.
               <br>This works best when "Preserve existing groups" is also enabled. The AI will analyze existing groups and merge new tabs into them.
+              <br><strong>Groups named "PINNED" and "BOOKMARKS" are always preserved</strong>; these options apply to other groups only.
             </p>
           </div>
           <label class="switch">
@@ -200,21 +228,6 @@
             <input type="checkbox" id="organizeOnClick">
             <span class="slider"></span>
           </label>
-        </div>
-      </section>
-      
-      <section class="info-section">
-        <h2>How to Use</h2>
-        <div class="info-content">
-          <p><strong>Click the extension icon</strong> in your Chrome toolbar to instantly close duplicate tabs.</p>
-          <p>The extension will:</p>
-          <ul>
-            <li>Detect duplicate tabs based on your settings</li>
-            <li>Keep the tab with the highest anchor number (e.g., latest GitHub comment)</li>
-            <li>Close all other duplicates</li>
-          </ul>
-          <p>The extension icon badge shows how many duplicate tabs are currently open.</p>
-          <p><strong>AI Tab Organization:</strong> Use the "Organize Tabs" button in the popup to automatically group your tabs using AI. Configure your API keys above to enable this feature.</p>
         </div>
       </section>
     </div>

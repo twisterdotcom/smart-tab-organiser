@@ -6,7 +6,9 @@
   "permissions": [
     "tabs",
     "storage",
-    "tabGroups"
+    "tabGroups",
+    "notifications",
+    "contextMenus"
   ],
   "host_permissions": [
     "https://api.openai.com/*",
@@ -17,7 +19,8 @@
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
-    }
+    },
+    "default_title": "Dedupe and tidy PINNED (left-click)"
   },
   "options_page": "options.html",
   "icons": {
@@ -27,6 +30,14 @@
   },
   "background": {
     "service_worker": "background.js"
+  },
+  "commands": {
+    "organize-tabs": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+O",
+        "mac": "Command+Shift+O"
+      },
+      "description": "Organize tabs with AI"
+    }
   }
 }
-

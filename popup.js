@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const closeDuplicatesBtn = document.getElementById('closeDuplicatesBtn');
   const reloadAllBtn = document.getElementById('reloadAllBtn');
   const organizeTabsBtn = document.getElementById('organizeTabsBtn');
+  const tidyPinnedBtn = document.getElementById('tidyPinnedBtn');
   const ungroupTabsBtn = document.getElementById('ungroupTabsBtn');
   const status = document.getElementById('status');
   const ignoreQueryCheckbox = document.getElementById('ignoreQuery');
@@ -137,6 +138,32 @@ document.addEventListener('DOMContentLoaded', async () => {
       status.className = 'status error';
     } finally {
       organizeTabsBtn.disabled = false;
+    }
+  });
+
+  // Tidy PINNED button (dedupe + move non-PINNED URLs out of PINNED group to end)
+  tidyPinnedBtn.addEventListener('click', async () => {
+    tidyPinnedBtn.disabled = true;
+    status.textContent = 'Deduplicating and tidying PINNED...';
+    status.className = 'status info';
+
+    try {
+      const result = await chrome.runtime.sendMessage({
+        action: 'dedupeAndTidyPinned'
+      });
+
+      if (result.success) {
+        status.textContent = result.message || 'PINNED tidied.';
+        status.className = 'status success';
+      } else {
+        status.textContent = result.error || 'An error occurred';
+        status.className = 'status error';
+      }
+    } catch (error) {
+      status.textContent = 'Error: ' + error.message;
+      status.className = 'status error';
+    } finally {
+      tidyPinnedBtn.disabled = false;
     }
   });
 

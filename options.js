@@ -1,6 +1,11 @@
 // Options page script
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // Scroll to custom instructions when opened via "Edit prompt"
+  if (window.location.hash === '#custom-instructions') {
+    const el = document.getElementById('custom-instructions');
+    if (el) el.scrollIntoView();
+  }
   const ignoreQueryCheckbox = document.getElementById('ignoreQuery');
   const ignoreHashCheckbox = document.getElementById('ignoreHash');
   const reloadTabsCheckbox = document.getElementById('reloadTabs');
@@ -17,14 +22,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   const mergeIntoExistingCheckbox = document.getElementById('mergeIntoExisting');
   const organizeOnClickCheckbox = document.getElementById('organizeOnClick');
   const organizeTabsBtn = document.getElementById('organizeTabsBtn');
+  const tidyPinnedBtn = document.getElementById('tidyPinnedBtn');
   const ungroupTabsBtn = document.getElementById('ungroupTabsBtn');
+  const pinnedUrlsTextarea = document.getElementById('pinnedUrls');
 
   // Load saved settings
   const settings = await chrome.storage.local.get([
     'ignoreQuery', 'ignoreHash', 'reloadTabs', 
     'openaiKey', 'claudeKey', 'aiProvider',
     'openaiModel', 'claudeModel', 'customInstructionsOptions', 
-    'preserveGroups', 'mergeIntoExisting', 'organizeOnClick'
+    'preserveGroups', 'mergeIntoExisting', 'organizeOnClick', 'pinnedUrls'
   ]);
   ignoreQueryCheckbox.checked = settings.ignoreQuery !== false; // default to true
   ignoreHashCheckbox.checked = settings.ignoreHash !== false; // default to true
@@ -46,6 +53,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   preserveGroupsCheckbox.checked = settings.preserveGroups !== false; // default to true
   mergeIntoExistingCheckbox.checked = settings.mergeIntoExisting === true;
   organizeOnClickCheckbox.checked = settings.organizeOnClick === true;
+  if (settings.pinnedUrls && Array.isArray(settings.pinnedUrls)) {
+    pinnedUrlsTextarea.value = settings.pinnedUrls.join('\n');
+  } else if (typeof settings.pinnedUrls === 'string') {
+    pinnedUrlsTextarea.value = settings.pinnedUrls;
+  }
 
   // Save settings when changed
   ignoreQueryCheckbox.addEventListener('change', () => {
@@ -97,6 +109,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   
   organizeOnClickCheckbox.addEventListener('change', () => {
     chrome.storage.local.set({ organizeOnClick: organizeOnClickCheckbox.checked });
+  });
+
+  pinnedUrlsTextarea.addEventListener('input', () => {
+    const lines = pinnedUrlsTextarea.value.split('\n').map(s => s.trim()).filter(Boolean);
+    chrome.storage.local.set({ pinnedUrls: lines });
   });
 
   // Test duplicate detection
@@ -185,6 +202,32 @@ document.addEventListener('DOMContentLoaded', async () => {
       actionStatus.className = 'status error';
     } finally {
       organizeTabsBtn.disabled = false;
+    }
+  });
+
+  // Deduplicate and tidy PINNED button
+  tidyPinnedBtn.addEventListener('click', async () => {
+    tidyPinnedBtn.disabled = true;
+    actionStatus.textContent = 'Deduplicating and tidying PINNED...';
+    actionStatus.className = 'status info';
+
+    try {
+      const result = await chrome.runtime.sendMessage({
+        action: 'dedupeAndTidyPinned'
+      });
+
+      if (result.success) {
+        actionStatus.textContent = result.message || 'PINNED group tidied.';
+        actionStatus.className = 'status success';
+      } else {
+        actionStatus.textContent = result.error || 'An error occurred';
+        actionStatus.className = 'status error';
+      }
+    } catch (error) {
+      actionStatus.textContent = 'Error: ' + error.message;
+      actionStatus.className = 'status error';
+    } finally {
+      tidyPinnedBtn.disabled = false;
     }
   });
 
