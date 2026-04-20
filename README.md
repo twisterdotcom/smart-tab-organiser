@@ -53,11 +53,11 @@ The extension can treat these as one logical page, keep the tab with the **highe
 
 ### Steps
 
-1. **Clone** this repository (the GitHub repo name may still be `close-duplicate-tabs`; the clone URL is whatever your remote shows):
+1. **Clone** this repository:
 
    ```bash
-   git clone https://github.com/twisterdotcom/close-duplicate-tabs.git
-   cd close-duplicate-tabs
+   git clone https://github.com/twisterdotcom/smart-tab-organiser.git
+   cd smart-tab-organiser
    ```
 
 2. Open the extensions page:
