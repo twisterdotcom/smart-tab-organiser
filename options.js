@@ -14,24 +14,51 @@ document.addEventListener('DOMContentLoaded', async () => {
   const actionStatus = document.getElementById('actionStatus');
   const openaiKeyInput = document.getElementById('openaiKey');
   const claudeKeyInput = document.getElementById('claudeKey');
+  const geminiKeyInput = document.getElementById('geminiKey');
   const aiProviderSelect = document.getElementById('aiProvider');
   const openaiModelSelect = document.getElementById('openaiModel');
   const claudeModelSelect = document.getElementById('claudeModel');
+  const geminiModelSelect = document.getElementById('geminiModel');
   const customInstructionsOptions = document.getElementById('customInstructionsOptions');
   const preserveGroupsCheckbox = document.getElementById('preserveGroups');
+  const preserveGroupsMinTabsInput = document.getElementById('preserveGroupsMinTabs');
+  const preserveGroupsMinTabsRow = document.getElementById('preserveGroupsMinTabsRow');
+  const preserveGroupsMinTabsWarning = document.getElementById('preserveGroupsMinTabsWarning');
   const mergeIntoExistingCheckbox = document.getElementById('mergeIntoExisting');
   const organizeOnClickCheckbox = document.getElementById('organizeOnClick');
   const organizeTabsBtn = document.getElementById('organizeTabsBtn');
   const tidyPinnedBtn = document.getElementById('tidyPinnedBtn');
   const ungroupTabsBtn = document.getElementById('ungroupTabsBtn');
   const pinnedUrlsTextarea = document.getElementById('pinnedUrls');
+  const refreshPrGroupBtn = document.getElementById('refreshPrGroupBtn');
+  const githubTokenInput = document.getElementById('githubToken');
+  const prGroupEnabledCheckbox = document.getElementById('prGroupEnabled');
+  const bookmarksGroupColorSelect = document.getElementById('bookmarksGroupColor');
+
+  // Show/hide password for API key inputs
+  document.querySelectorAll('.toggle-password').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const wrapper = btn.closest('.input-with-toggle');
+      const input = wrapper && wrapper.querySelector('input[type="password"], input[type="text"]');
+      if (!input) return;
+      const isPassword = input.type === 'password';
+      input.type = isPassword ? 'text' : 'password';
+      btn.classList.toggle('revealed', isPassword);
+      const currentLabel = btn.getAttribute('aria-label') || ' key';
+      const suffix = currentLabel.startsWith('Show ') ? currentLabel.slice(5) : currentLabel.startsWith('Hide ') ? currentLabel.slice(5) : 'key';
+      const newLabel = isPassword ? `Hide ${suffix}` : `Show ${suffix}`;
+      btn.setAttribute('aria-label', newLabel);
+      btn.setAttribute('title', newLabel);
+    });
+  });
 
   // Load saved settings
   const settings = await chrome.storage.local.get([
-    'ignoreQuery', 'ignoreHash', 'reloadTabs', 
-    'openaiKey', 'claudeKey', 'aiProvider',
-    'openaiModel', 'claudeModel', 'customInstructionsOptions', 
-    'preserveGroups', 'mergeIntoExisting', 'organizeOnClick', 'pinnedUrls'
+    'ignoreQuery', 'ignoreHash', 'reloadTabs',
+    'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider',
+    'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
+    'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting', 'organizeOnClick', 'pinnedUrls',
+    'githubToken', 'prGroupEnabled', 'bookmarksGroupColor'
   ]);
   ignoreQueryCheckbox.checked = settings.ignoreQuery !== false; // default to true
   ignoreHashCheckbox.checked = settings.ignoreHash !== false; // default to true
@@ -44,13 +71,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (settings.claudeKey) {
     claudeKeyInput.value = settings.claudeKey;
   }
+  if (settings.geminiKey) {
+    geminiKeyInput.value = settings.geminiKey;
+  }
   aiProviderSelect.value = settings.aiProvider || 'openai';
   openaiModelSelect.value = settings.openaiModel || 'gpt-5-mini';
   claudeModelSelect.value = settings.claudeModel || 'claude-haiku-4-5-20251001';
+  geminiModelSelect.value = settings.geminiModel || 'gemini-2.0-flash';
   if (settings.customInstructionsOptions) {
     customInstructionsOptions.value = settings.customInstructionsOptions;
   }
   preserveGroupsCheckbox.checked = settings.preserveGroups !== false; // default to true
+  const savedMinTabs = settings.preserveGroupsMinTabs;
+  preserveGroupsMinTabsInput.value = savedMinTabs !== undefined && savedMinTabs !== '' ? Number(savedMinTabs) : 1;
+  updatePreserveGroupsMinTabsVisibility();
+  updatePreserveGroupsMinTabsWarning();
   mergeIntoExistingCheckbox.checked = settings.mergeIntoExisting === true;
   organizeOnClickCheckbox.checked = settings.organizeOnClick === true;
   if (settings.pinnedUrls && Array.isArray(settings.pinnedUrls)) {
@@ -58,6 +93,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   } else if (typeof settings.pinnedUrls === 'string') {
     pinnedUrlsTextarea.value = settings.pinnedUrls;
   }
+  if (settings.githubToken) {
+    githubTokenInput.value = settings.githubToken;
+  }
+  prGroupEnabledCheckbox.checked = settings.prGroupEnabled === true;
+  bookmarksGroupColorSelect.value = settings.bookmarksGroupColor || 'yellow';
 
   // Save settings when changed
   ignoreQueryCheckbox.addEventListener('change', () => {
@@ -83,6 +123,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.storage.local.set({ claudeKey: claudeKeyInput.value.trim() });
   });
   
+  geminiKeyInput.addEventListener('input', () => {
+    chrome.storage.local.set({ geminiKey: geminiKeyInput.value.trim() });
+  });
+  
   aiProviderSelect.addEventListener('change', () => {
     chrome.storage.local.set({ aiProvider: aiProviderSelect.value });
   });
@@ -95,12 +139,45 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.storage.local.set({ claudeModel: claudeModelSelect.value });
   });
   
+  geminiModelSelect.addEventListener('change', () => {
+    chrome.storage.local.set({ geminiModel: geminiModelSelect.value });
+  });
+  
   customInstructionsOptions.addEventListener('input', () => {
     chrome.storage.local.set({ customInstructionsOptions: customInstructionsOptions.value.trim() });
   });
   
+  function updatePreserveGroupsMinTabsVisibility() {
+    const visible = preserveGroupsCheckbox.checked;
+    preserveGroupsMinTabsRow.style.display = visible ? '' : 'none';
+    preserveGroupsMinTabsInput.disabled = !visible;
+  }
+
+  function updatePreserveGroupsMinTabsWarning() {
+    const n = parseInt(preserveGroupsMinTabsInput.value, 10);
+    preserveGroupsMinTabsWarning.style.display = (!isNaN(n) && n > 3) ? '' : 'none';
+  }
+
   preserveGroupsCheckbox.addEventListener('change', () => {
     chrome.storage.local.set({ preserveGroups: preserveGroupsCheckbox.checked });
+    updatePreserveGroupsMinTabsVisibility();
+  });
+
+  preserveGroupsMinTabsInput.addEventListener('input', () => {
+    const raw = preserveGroupsMinTabsInput.value.trim();
+    const n = raw === '' ? 1 : Math.max(0, parseInt(raw, 10));
+    if (!isNaN(n)) {
+      chrome.storage.local.set({ preserveGroupsMinTabs: n });
+      preserveGroupsMinTabsInput.value = n;
+    }
+    updatePreserveGroupsMinTabsWarning();
+  });
+
+  preserveGroupsMinTabsInput.addEventListener('change', () => {
+    const n = Math.max(0, parseInt(preserveGroupsMinTabsInput.value, 10) || 1);
+    preserveGroupsMinTabsInput.value = n;
+    chrome.storage.local.set({ preserveGroupsMinTabs: n });
+    updatePreserveGroupsMinTabsWarning();
   });
   
   mergeIntoExistingCheckbox.addEventListener('change', () => {
@@ -114,6 +191,39 @@ document.addEventListener('DOMContentLoaded', async () => {
   pinnedUrlsTextarea.addEventListener('input', () => {
     const lines = pinnedUrlsTextarea.value.split('\n').map(s => s.trim()).filter(Boolean);
     chrome.storage.local.set({ pinnedUrls: lines });
+  });
+
+  bookmarksGroupColorSelect.addEventListener('change', () => {
+    chrome.storage.local.set({ bookmarksGroupColor: bookmarksGroupColorSelect.value });
+  });
+
+  githubTokenInput.addEventListener('input', () => {
+    chrome.storage.local.set({ githubToken: githubTokenInput.value.trim() });
+  });
+  prGroupEnabledCheckbox.addEventListener('change', () => {
+    chrome.storage.local.set({ prGroupEnabled: prGroupEnabledCheckbox.checked });
+  });
+
+  // Refresh PR group button
+  refreshPrGroupBtn.addEventListener('click', async () => {
+    refreshPrGroupBtn.disabled = true;
+    actionStatus.textContent = 'Refreshing PR group...';
+    actionStatus.className = 'status info';
+    try {
+      const result = await chrome.runtime.sendMessage({ action: 'syncPrTabGroup' });
+      if (result.success) {
+        actionStatus.textContent = result.message || 'PR group refreshed.';
+        actionStatus.className = 'status success';
+      } else {
+        actionStatus.textContent = result.error || 'Failed to refresh PR group';
+        actionStatus.className = 'status error';
+      }
+    } catch (error) {
+      actionStatus.textContent = 'Error: ' + error.message;
+      actionStatus.className = 'status error';
+    } finally {
+      refreshPrGroupBtn.disabled = false;
+    }
   });
 
   // Test duplicate detection
@@ -180,12 +290,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     try {
       const preserveGroups = preserveGroupsCheckbox.checked;
+      const preserveGroupsMinTabs = Math.max(0, parseInt(preserveGroupsMinTabsInput.value, 10) || 1);
       const mergeIntoExisting = mergeIntoExistingCheckbox.checked;
       const customInstructions = customInstructionsOptions.value.trim();
 
       const result = await chrome.runtime.sendMessage({
         action: 'organizeTabs',
         preserveGroups,
+        preserveGroupsMinTabs,
         mergeIntoExisting,
         customInstructions
       });
@@ -205,10 +317,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // Deduplicate and tidy PINNED button
+  // Deduplicate and tidy pinned tabs button
   tidyPinnedBtn.addEventListener('click', async () => {
     tidyPinnedBtn.disabled = true;
-    actionStatus.textContent = 'Deduplicating and tidying PINNED...';
+    actionStatus.textContent = 'Deduplicating and tidying pinned tabs...';
     actionStatus.className = 'status info';
 
     try {
@@ -217,7 +329,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
 
       if (result.success) {
-        actionStatus.textContent = result.message || 'PINNED group tidied.';
+        actionStatus.textContent = result.message || 'Pinned tabs tidied.';
         actionStatus.className = 'status success';
       } else {
         actionStatus.textContent = result.error || 'An error occurred';

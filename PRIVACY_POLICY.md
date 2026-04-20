@@ -13,7 +13,7 @@ This extension stores all data locally on your device using Chrome's `chrome.sto
 
 ### What Data is Stored
 - **User Preferences**: Your extension settings (ignore query parameters, ignore hash, reload tabs option)
-- **AI API Keys**: If you choose to use AI tab organization, your API keys (OpenAI or Claude) are stored locally on your device
+- **AI API Keys**: If you choose to use AI tab organization, your API keys (OpenAI, Claude, or Gemini) are stored locally on your device
 - **No URLs or Tab Data**: The extension does NOT store, log, or transmit any URLs, tab information, or browsing history (except when using AI features - see below)
 
 ### How Data is Used
@@ -46,6 +46,7 @@ This extension stores all data locally on your device using Chrome's `chrome.sto
 If you choose to use the AI tab organization feature, the extension will send tab titles and URLs to either:
 - **OpenAI** (api.openai.com) - when using OpenAI models
 - **Anthropic** (api.anthropic.com) - when using Claude models
+- **Google** (generativelanguage.googleapis.com) - when using Gemini models
 
 **What is sent**: Only tab titles and URLs are sent to the AI service for categorization. This data is sent directly to the AI provider's API using your own API key.
 

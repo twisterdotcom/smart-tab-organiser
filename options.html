@@ -4,6 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Organise and Deduplicate Tabs - Settings</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
@@ -17,8 +20,8 @@
       <section class="info-section">
         <h2>How to Use</h2>
         <div class="info-content">
-          <p><strong>Click the extension icon</strong> to deduplicate tabs and tidy the PINNED group (move non-PINNED URLs to the end, reorder PINNED to match your list). Duplicate detection uses your settings (e.g. keep highest anchor). The icon badge shows how many duplicate tabs are open.</p>
-          <p><strong>Three ways to run:</strong> (1) Click the extension icon to deduplicate and tidy PINNED. (2) Right-click → "Deduplicate and organize tabs with AI" to dedupe and reorganize with AI. (3) Right-click → "Deduplicate and tidy PINNED" does the same as the icon click.</p>
+          <p><strong>Click the extension icon</strong> to deduplicate tabs and tidy your pinned tabs (unpin tabs not in your list, pin matching ones, reorder to match your list). If no tabs are pinned yet, the extension will pin tabs from your list (opening new tabs for any URL not already open). Duplicate detection uses your settings (e.g. keep highest anchor). The icon badge shows how many duplicate tabs are open.</p>
+          <p><strong>Three ways to run:</strong> (1) Click the extension icon to deduplicate and tidy pinned tabs. (2) Right-click → "Deduplicate and organize tabs with AI" to dedupe and reorganize with AI. (3) Right-click → "Deduplicate and tidy pinned tabs" does the same as the icon click.</p>
           <p><strong>AI Tab Organization:</strong> Use "Organize tabs with AI" from the context menu, keyboard shortcut (⌘+Shift+O / Ctrl+Shift+O), or "Organize Tabs" in the popup. Configure your API keys below to enable it.</p>
         </div>
       </section>
@@ -29,7 +32,7 @@
           <button id="testBtn" class="btn btn-secondary">Test Duplicate Detection</button>
           <button id="reloadAllBtn" class="btn btn-secondary">Reload All Tabs</button>
           <button id="organizeTabsBtn" class="btn btn-primary">Organize Tabs with AI</button>
-          <button id="tidyPinnedBtn" class="btn btn-secondary">Deduplicate and tidy PINNED</button>
+          <button id="tidyPinnedBtn" class="btn btn-secondary">Deduplicate and tidy pinned tabs</button>
           <button id="ungroupTabsBtn" class="btn btn-secondary">Ungroup All Tabs</button>
         </div>
         <div id="actionStatus" class="status"></div>
@@ -82,18 +85,74 @@
       </section>
       
       <section class="settings-section">
-        <h2>PINNED group</h2>
-        <p class="section-description">Define which URLs belong in the PINNED tab group and in what order. When you run "Deduplicate and tidy PINNED" or organize with AI, any tab in the PINNED group that is not in this list will be moved out (to the end or into another group).</p>
+        <h2>Pinned tabs</h2>
+        <p class="section-description">Define which URLs should be Chrome-pinned (compact favicon tabs on the left of the tab bar). When you run "Deduplicate and tidy pinned tabs" or organize with AI, any pinned tab not in this list will be unpinned, and matching unpinned tabs will be pinned and ordered. <strong>If no tabs are pinned yet, the extension will pin tabs from this list (opening new tabs for any URL not already open).</strong></p>
         
         <div class="setting-item setting-item--stacked">
           <div class="setting-info">
-            <label class="setting-label" for="pinnedUrls">PINNED URLs (one per line, order = tab order)</label>
+            <label class="setting-label" for="pinnedUrls">Pinned URLs (one per line, order = tab order)</label>
             <p class="setting-description">
-              <strong>Exact match</strong> (no prefix): only that exact URL stays in PINNED (after normalizing query/hash per your duplicate settings).<br>
-              <strong>Prefix match</strong>: start a line with <code>*</code> so any tab whose URL starts with the rest of the line stays in PINNED (e.g. <code>*https://mail.google.com/mail/u/0</code> keeps inbox, drafts, etc.; <code>*https://chatgpt.com/</code> keeps any ChatGPT page; <code>*https://app.slack.com/client/E047TPA624F</code> keeps that workspace and any channel). Leave empty to keep all current PINNED tabs as-is when tidying.
+              <strong>Exact match</strong> (no prefix): only that exact URL stays pinned (after normalizing query/hash per your duplicate settings).<br>
+              <strong>Prefix match</strong>: start a line with <code>*</code> so any tab whose URL starts with the rest of the line stays pinned (e.g. <code>*https://mail.google.com/mail/u/0</code> keeps inbox, drafts, etc.; <code>*https://chatgpt.com/</code> keeps any ChatGPT page; <code>*https://app.slack.com/client/E047TPA624F</code> keeps that workspace and any channel).<br>
+              <strong>Soft (only when already open):</strong> start with <code>~</code> so the tab is only pinned when it already exists in the window; the extension never opens it. Use <code>~*https://...</code> for soft prefix or <code>~https://...</code> for soft exact. Example: <code>~*https://app.slack.com/client/E047TPA624F</code> keeps Slack pinned only in windows where you have Slack open — it won’t be recreated in new windows. Leave empty to keep all currently pinned tabs as-is when tidying.
             </p>
           </div>
           <textarea id="pinnedUrls" class="custom-instructions-textarea" placeholder="*https://mail.google.com/mail/u/0&#10;*https://app.slack.com/client/E047TPA624F&#10;https://staging.new.expensify.com/home&#10;*https://chatgpt.com/" rows="5"></textarea>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="bookmarksGroupColor">BOOKMARKS group colour</label>
+            <p class="setting-description">Colour for the BOOKMARKS tab group. Applied whenever you run dedupe/tidy so the group keeps this colour.</p>
+          </div>
+          <select id="bookmarksGroupColor" class="provider-select">
+            <option value="yellow">Yellow</option>
+            <option value="green">Green</option>
+            <option value="blue">Blue</option>
+            <option value="red">Red</option>
+            <option value="pink">Pink</option>
+            <option value="purple">Purple</option>
+            <option value="cyan">Cyan</option>
+            <option value="orange">Orange</option>
+            <option value="grey">Grey</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h2>GitHub PR tab group</h2>
+        <p class="section-description">When enabled, the extension maintains a tab group named <strong>PRs</strong> with one tab per open pull request (authored by you or awaiting your review). Only the extension adds or removes tabs in this group. Your token is stored locally and used only to call the GitHub API.</p>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="githubToken">GitHub personal access token</label>
+            <p class="setting-description">
+              Used only to fetch your open PRs and PRs awaiting your review. Requires at least <code>read:user</code>; for private repos use <code>repo</code>.
+              <br><strong>Create a token:</strong> <a href="https://github.com/settings/tokens?type=beta" target="_blank">github.com/settings/tokens</a>
+            </p>
+          </div>
+          <div class="input-with-toggle">
+            <input type="password" id="githubToken" class="api-key-input" placeholder="ghp_...">
+            <button type="button" class="toggle-password" aria-label="Show token" title="Show token"><span class="eye-icon" aria-hidden="true"></span></button>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label">Enable PR tab group</label>
+            <p class="setting-description">
+              When enabled, a tab group named <strong>PRs</strong> is created or updated with one tab per open PR. When you run dedupe/organize, the extension refreshes this group first and treats the tab in the PR group as the main copy when closing duplicates elsewhere (split-view tabs are still never closed).
+            </p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="prGroupEnabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-item">
+          <button id="refreshPrGroupBtn" class="btn btn-secondary">Refresh PR group</button>
+          <p class="setting-description" style="margin-top: 0.5em;">Manually refresh the PRs tab group now. It also refreshes automatically when you run dedupe/organize.</p>
         </div>
       </section>
       
@@ -109,7 +168,10 @@
               <br><strong>Get your key:</strong> <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>
             </p>
           </div>
-          <input type="password" id="openaiKey" class="api-key-input" placeholder="sk-...">
+          <div class="input-with-toggle">
+            <input type="password" id="openaiKey" class="api-key-input" placeholder="sk-...">
+            <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
+          </div>
         </div>
         
         <div class="setting-item">
@@ -120,7 +182,24 @@
               <br><strong>Get your key:</strong> <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com/settings/keys</a>
             </p>
           </div>
-          <input type="password" id="claudeKey" class="api-key-input" placeholder="sk-ant-...">
+          <div class="input-with-toggle">
+            <input type="password" id="claudeKey" class="api-key-input" placeholder="sk-ant-...">
+            <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
+          </div>
+        </div>
+        
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="geminiKey">Gemini API Key</label>
+            <p class="setting-description">
+              Enter your Google Gemini API key to use Gemini models for tab organization. Leave empty to disable.
+              <br><strong>Get your key:</strong> <a href="https://aistudio.google.com/app/apikey" target="_blank">aistudio.google.com/app/apikey</a>
+            </p>
+          </div>
+          <div class="input-with-toggle">
+            <input type="password" id="geminiKey" class="api-key-input" placeholder="AIza...">
+            <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
+          </div>
         </div>
         
         <div class="setting-item">
@@ -133,6 +212,7 @@
           <select id="aiProvider" class="provider-select">
             <option value="openai">OpenAI</option>
             <option value="claude">Claude</option>
+            <option value="gemini">Gemini</option>
           </select>
         </div>
         
@@ -175,6 +255,22 @@
           </select>
         </div>
         
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="geminiModel">Gemini Model</label>
+            <p class="setting-description">
+              Choose which Gemini model to use for tab organization.
+            </p>
+          </div>
+          <select id="geminiModel" class="provider-select">
+            <option value="gemini-2.0-flash">Gemini 2.0 Flash (Fast, capable)</option>
+            <option value="gemini-2.0-flash-lite">Gemini 2.0 Flash Lite (Fastest)</option>
+            <option value="gemini-1.5-flash">Gemini 1.5 Flash (Balanced)</option>
+            <option value="gemini-1.5-flash-8b">Gemini 1.5 Flash-8B (Lightweight)</option>
+            <option value="gemini-1.5-pro">Gemini 1.5 Pro (Most capable)</option>
+          </select>
+        </div>
+        
         <div id="custom-instructions" class="setting-item setting-item--stacked">
           <div class="setting-info">
             <label class="setting-label" for="customInstructionsOptions">Custom Instructions</label>
@@ -192,13 +288,28 @@
             <p class="setting-description">
               When enabled, tabs that are already in groups will be skipped during organization.
               <br>When disabled, all tabs will be reorganized into new groups.
-              <br><strong>Groups named "PINNED" and "BOOKMARKS" are always preserved</strong>, regardless of this setting.
+              <br><strong>Pinned tabs and groups named "BOOKMARKS" and "PRs" are always preserved</strong>, regardless of this setting.
             </p>
           </div>
           <label class="switch">
             <input type="checkbox" id="preserveGroups">
             <span class="slider"></span>
           </label>
+        </div>
+
+        <div id="preserveGroupsMinTabsRow" class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="preserveGroupsMinTabs">Only preserve groups with more than N tabs</label>
+            <p class="setting-description">
+              When set, only groups that have <strong>more than N</strong> tabs are preserved. Groups with N tabs or fewer are ungrouped and sent through AI organization again.
+              <br>AI will also never create a new group with N or fewer tabs; such tabs go into Misc.
+              <br>Example: with <strong>2</strong>, groups with 3+ tabs are preserved; groups with 1–2 tabs are re-organized, and new groups have at least 3 tabs.
+            </p>
+            <p id="preserveGroupsMinTabsWarning" class="setting-warning" role="alert" style="display: none;">
+              This feature may not work well if the number is higher than 3.
+            </p>
+          </div>
+          <input type="number" id="preserveGroupsMinTabs" min="0" max="20" value="1" class="api-key-input" style="width: 4em;">
         </div>
         
         <div class="setting-item">
@@ -207,7 +318,7 @@
             <p class="setting-description">
               When enabled, the AI will intelligently merge ungrouped tabs into existing groups where appropriate.
               <br>This works best when "Preserve existing groups" is also enabled. The AI will analyze existing groups and merge new tabs into them.
-              <br><strong>Groups named "PINNED" and "BOOKMARKS" are always preserved</strong>; these options apply to other groups only.
+              <br><strong>Pinned tabs and the "BOOKMARKS" group are always preserved</strong>; these options apply to other groups only.
             </p>
           </div>
           <label class="switch">

@@ -141,10 +141,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // Tidy PINNED button (dedupe + move non-PINNED URLs out of PINNED group to end)
+  // Tidy pinned tabs button (dedupe + unpin non-matching, pin & order matching)
   tidyPinnedBtn.addEventListener('click', async () => {
     tidyPinnedBtn.disabled = true;
-    status.textContent = 'Deduplicating and tidying PINNED...';
+    status.textContent = 'Deduplicating and tidying pinned tabs...';
     status.className = 'status info';
 
     try {
@@ -153,7 +153,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
 
       if (result.success) {
-        status.textContent = result.message || 'PINNED tidied.';
+        status.textContent = result.message || 'Pinned tabs tidied.';
         status.className = 'status success';
       } else {
         status.textContent = result.error || 'An error occurred';

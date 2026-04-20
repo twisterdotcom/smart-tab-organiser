@@ -12,7 +12,9 @@
   ],
   "host_permissions": [
     "https://api.openai.com/*",
-    "https://api.anthropic.com/*"
+    "https://api.anthropic.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.github.com/*"
   ],
   "action": {
     "default_icon": {
@@ -20,7 +22,7 @@
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     },
-    "default_title": "Dedupe and tidy PINNED (left-click)"
+    "default_title": "Dedupe and tidy pinned tabs (left-click)"
   },
   "options_page": "options.html",
   "icons": {

@@ -14,7 +14,7 @@ A Chrome Extension that organises tabs with AI and closes duplicate tabs, includ
 
 ## ✨ Key Features
 
-- **AI-Powered Tab Organization**: Organise your tabs into logical groups using OpenAI (GPT-5.2, GPT-5 mini, GPT-4.1, and more) or Claude (Claude Opus 4.6, Sonnet 4.6, Haiku 4.5, and more)
+- **AI-Powered Tab Organization**: Organise your tabs into logical groups using OpenAI (GPT-5.2, GPT-5 mini, GPT-4.1, and more), Claude (Claude Opus 4.6, Sonnet 4.6, Haiku 4.5, and more), or Gemini (Gemini 2.0 Flash, 1.5 Flash, 1.5 Pro, and more)
 - **Smart Duplicate Detection**: Detects duplicate tabs even when they have different anchors/hashes
 - **Case-Insensitive Matching**: Handles URLs with different cases (e.g., `Expensify` vs `expensify`)
 - **Works with Suspended Tabs**: Detects duplicates even in inactive tabs (Arc browser compatible)
@@ -89,7 +89,7 @@ The extension will be available on the Chrome Web Store soon. Check back for upd
 ### AI Tab Organization
 
 1. Go to the extension options page (right-click extension icon → Options)
-2. Configure your AI API keys (OpenAI or Claude)
+2. Configure your AI API keys (OpenAI, Claude, or Gemini)
 3. Select your preferred model and provider
 4. Optionally add custom instructions (e.g., "group by domain" or "group by topic")
 5. Click "Organize Tabs with AI" in the options page, or use the "Organize Tabs" button in the popup
