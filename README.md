@@ -1,140 +1,142 @@
-# Organise and Deduplicate Tabs
+# Smart Tab Organiser
 
-A Chrome Extension that organises tabs with AI and closes duplicate tabs, including those with different anchors/hashes. When duplicates are found, it keeps the tab with the highest anchor number (e.g., the latest GitHub comment).
+A Chrome extension that **deduplicates tabs** (including smart rules for hashes/anchors), **tidies pinned tab lists**, optionally maintains a **GitHub pull-request tab group**, and **organises tabs with AI** into groups. Duplicate handling can keep the tab with the highest anchor number (for example, the latest GitHub comment on an issue).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-coming%20soon-lightgrey)](https://chrome.google.com/webstore)
 
-## 🔒 Privacy
+## Privacy
 
-- **100% Local**: All data stored locally on your device
-- **No Tracking**: No analytics, telemetry, or external requests
-- **Open Source**: Full source code available for review
+- **Local by default**: Settings and optional API tokens stay on your device (`chrome.storage.local`).
+- **No analytics**: No telemetry or tracking from this extension.
+- **Optional cloud features**: AI organisation and the PR tab group send data only when you configure keys and use those features—see [Privacy Policy](PRIVACY_POLICY.md).
 - [Privacy Policy](PRIVACY_POLICY.md)
 
-## ✨ Key Features
+## Key features
 
-- **AI-Powered Tab Organization**: Organise your tabs into logical groups using OpenAI (GPT-5.2, GPT-5 mini, GPT-4.1, and more), Claude (Claude Opus 4.6, Sonnet 4.6, Haiku 4.5, and more), or Gemini (Gemini 2.0 Flash, 1.5 Flash, 1.5 Pro, and more)
-- **Smart Duplicate Detection**: Detects duplicate tabs even when they have different anchors/hashes
-- **Case-Insensitive Matching**: Handles URLs with different cases (e.g., `Expensify` vs `expensify`)
-- **Works with Suspended Tabs**: Detects duplicates even in inactive tabs (Arc browser compatible)
-- **Anchor Number Comparison**: Automatically keeps the tab with the highest number in the anchor (e.g., `#issuecomment-3595796076` vs `#issuecomment-3595795518`)
-- **Visual Badge**: See duplicate count at a glance in the extension icon
-- **Configurable Options**:
-  - Ignore query parameters when comparing URLs
-  - Ignore hash when comparing (but still uses it to determine which tab to keep)
-  - Option to reload remaining tabs after closing duplicates
-  - Custom instructions for AI tab organization
-  - Choose between multiple AI models
-  - Toggle extension icon behavior (organize tabs vs close duplicates)
-- **Reload All Tabs**: Quick button to reload all tabs in the current window
-- **Tab Grouping**: Create and manage tab groups with AI assistance
+- **AI tab organisation**: Group tabs with OpenAI, Anthropic Claude, or Google Gemini (you supply API keys in Options).
+- **Duplicate detection**: Same base URL with different anchors/hashes; optional ignore-query / ignore-hash rules; case-insensitive matching.
+- **Pinned URL list**: Pin, unpin, and order tabs to match a list you define (runs with the toolbar action or combined flows).
+- **GitHub PR tab group** (optional): Uses your GitHub token to open/update a group of PR tabs; integrates with dedupe logic when enabled.
+- **Toolbar, context menu, and shortcut**: Left-click the icon, use the right-click menus, or **⌘+Shift+O** (Mac) / **Ctrl+Shift+O** (Windows/Linux) for the organise command (see `manifest.json` → `commands`).
+- **Popup**: Close duplicates only, reload all tabs, AI organise, and related toggles.
 
-## Example Use Case
+## Example: GitHub issue tabs
 
-For GitHub issue tabs like:
+For tabs like:
+
 - `https://github.com/Expensify/Expensify/issues/573091`
 - `https://github.com/Expensify/Expensify/issues/573091#issuecomment-3595795518`
 - `https://github.com/Expensify/Expensify/issues/573091#issuecomment-3595796076`
 
-The extension will:
-1. Recognize these as duplicates (same base URL)
-2. Keep only: `https://github.com/Expensify/Expensify/issues/573091#issuecomment-3595796076` (highest anchor number)
-3. Close the other two tabs
+The extension can treat these as one logical page, keep the tab with the **highest** anchor number, and close the others (depending on your settings).
 
-## 📁 Project Structure
+## Project structure
 
 ```
-├── manifest.json          # Extension configuration and permissions
-├── background.js          # Background service worker (tab management logic)
-├── popup.html/css/js      # Extension popup interface with settings
-├── options.html/css/js    # Options/settings page
-├── icons/                 # Extension icons (16x16, 48x48, 128x128)
-├── PRIVACY_POLICY.md      # Privacy policy
-└── README.md              # This file
+├── manifest.json          # Extension config and permissions
+├── background.js          # Service worker (dedupe, pin tidy, AI, PR group)
+├── popup.html/css/js      # Toolbar popup
+├── options.html/css/js    # Full settings (API keys, lists, PRs, AI)
+├── icons/                 # 16, 48, 128
+├── PRIVACY_POLICY.md
+└── README.md
 ```
 
-## 🚀 Installation
+## Install from source (local use)
 
-### From Source (Development)
+### Requirements
 
-1. Clone this repository:
+- **Google Chrome**, **Microsoft Edge**, or another **Chromium** browser with unpacked extensions.
+- For **AI organisation**: an API key from OpenAI, Anthropic, and/or Google (configured in **Extension options** after install).
+- For the **GitHub PR group**: a GitHub personal access token with appropriate repo scope (configured in Options).
+
+### Steps
+
+1. **Clone** this repository (the GitHub repo name may still be `close-duplicate-tabs`; the clone URL is whatever your remote shows):
+
    ```bash
    git clone https://github.com/twisterdotcom/close-duplicate-tabs.git
    cd close-duplicate-tabs
    ```
 
-2. Open Chrome and navigate to `chrome://extensions/`
-3. Enable "Developer mode" (toggle in top right)
-4. Click "Load unpacked"
-5. Select the extension directory
-6. The extension should now be loaded
+2. Open the extensions page:
 
-### From Chrome Web Store (Coming Soon)
+   - Chrome: `chrome://extensions`
+   - Edge: `edge://extensions`
 
-The extension will be available on the Chrome Web Store soon. Check back for updates!
+3. Turn on **Developer mode**.
 
-## How to Use
+4. Click **Load unpacked** and choose this folder (the directory that contains `manifest.json`).
 
-### Closing Duplicate Tabs
+5. **Pin the extension** (optional): use the puzzle icon → pin **Smart Tab Organiser** so the toolbar actions are easy to reach.
 
-1. Click the extension icon in your Chrome toolbar
-2. Configure your preferences:
-   - **Ignore query parameters**: When enabled, URLs with different query strings are treated as duplicates
-   - **Ignore hash when comparing**: When enabled, URLs are compared without their hash, but the hash is still used to determine which tab to keep (highest number)
-   - **Reload remaining tabs**: When enabled, remaining tabs will be reloaded after closing duplicates
-3. Click "Close Duplicates" to remove duplicate tabs
-4. Use "Reload All Tabs" to refresh all tabs in the current window
+### First-time setup
 
-### AI Tab Organization
+1. Right-click the extension icon → **Options** (or open Options from the extensions list).
+2. Set **dedupe / pin** preferences and any **pinned URL list** or **PR group** options you want.
+3. Under AI settings, paste **API keys** only if you plan to use AI organisation.
+4. Reload the extension after code changes: on `chrome://extensions` / `edge://extensions`, click **Reload** on the extension card.
 
-1. Go to the extension options page (right-click extension icon → Options)
-2. Configure your AI API keys (OpenAI, Claude, or Gemini)
-3. Select your preferred model and provider
-4. Optionally add custom instructions (e.g., "group by domain" or "group by topic")
-5. Click "Organize Tabs with AI" in the options page, or use the "Organize Tabs" button in the popup
-6. The AI will analyze your tabs and create logical groups automatically
+## How to use
+
+### Toolbar icon (default)
+
+Left-click runs **dedupe** then **tidy pinned tabs** (see in-app Options for the exact behaviour). The badge can show duplicate counts depending on settings.
+
+### Popup
+
+Click the icon (if it opens the popup—some setups run the action directly). From the popup you can **Close duplicates**, **Reload all tabs**, run **AI organise** when configured, and adjust common toggles.
+
+### Context menu
+
+Right-click the page or the extension icon (depending on browser) and use entries such as **Deduplicate and organize tabs with AI** or **Deduplicate and tidy pinned tabs**—wording matches your installed version.
+
+### Keyboard
+
+**⌘+Shift+O** (Mac) or **Ctrl+Shift+O** (Windows/Linux) triggers the **Organize tabs with AI** command when the shortcut is not taken by another extension or the browser.
 
 ## Development
 
-- Make changes to the files
-- Go to `chrome://extensions/` and click the refresh icon on your extension card
-- Test your changes
+- Edit files in this repo.
+- On the extensions page, click **Reload** on the extension’s card.
+- Use **Inspect views: service worker** (and popup/options devtools) to debug.
 
-## How It Works
+## How dedupe works (simplified)
 
-1. **URL Normalization**: URLs are normalized based on your settings (removing query/hash for comparison)
-2. **Grouping**: Tabs are grouped by their normalized URL
-3. **Anchor Extraction**: For each group, the extension extracts numbers from the anchor/hash
-4. **Selection**: The tab with the highest anchor number is kept (or most recently accessed if no anchors)
-5. **Cleanup**: All other tabs in the group are closed
+1. **Normalise** URLs using your settings (query/hash handling).
+2. **Group** tabs by normalised URL.
+3. **Pick a keeper** (e.g. highest number in the hash, or most recently used as a fallback).
+4. **Close** other tabs in the group.
 
-## 🔐 Permissions
+## Permissions
 
-- **`tabs`**: Required to query open tabs and close duplicate tabs. Only accesses tabs in the current browser window.
-- **`storage`**: Used to save your extension preferences locally. Only stores settings, no URLs or browsing data.
+| Permission | Why |
+|------------|-----|
+| `tabs` | Read tab URLs/titles, close tabs, reload, pin/unpin, reorder. |
+| `storage` | Save settings and optional API tokens locally. |
+| `tabGroups` | Create/update tab groups (AI organisation, PR group, bookmarks group, etc.). |
+| `notifications` | User feedback for long-running or batch actions (where implemented). |
+| `contextMenus` | Right-click commands for dedupe / organise flows. |
+| Host access for OpenAI, Anthropic, Gemini, GitHub | Only used when you configure keys and invoke those features. |
 
-See [Privacy Policy](PRIVACY_POLICY.md) for detailed information.
+Details: [PRIVACY_POLICY.md](PRIVACY_POLICY.md).
 
-## 🤝 Contributing
+## Contributing
 
-Contributions are welcome! Feel free to open an issue or submit a pull request.
+1. Fork the repository  
+2. Create a branch (`git checkout -b feature/your-feature`)  
+3. Commit and push  
+4. Open a pull request  
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+## License
 
-## 📝 License
+MIT — see [LICENSE](LICENSE).
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+## Acknowledgments
 
-## 🙏 Acknowledgments
-
-- Built for developers and power users who manage many browser tabs
-- Inspired by the need to clean up duplicate GitHub issue tabs
+Built for people who live in the browser—especially anyone drowning in duplicate issue tabs and pull requests.
 
 ---
 
-Made with ❤️ by [twisterdotcom](https://github.com/twisterdotcom)
+Made with care by [twisterdotcom](https://github.com/twisterdotcom)

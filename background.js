@@ -1,6 +1,6 @@
-// Background service worker for Organise and Deduplicate Tabs extension
+// Background service worker for Smart Tab Organiser extension
 
-console.log('Organise and Deduplicate Tabs extension background service worker loaded');
+console.log('Smart Tab Organiser extension background service worker loaded');
 
 /** Extract the first complete JSON array from text (handles trailing explanation text from the model). */
 function extractJsonArray(text) {
@@ -1143,7 +1143,7 @@ Return ONLY valid JSON, no other text. Example format:
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: { message: 'Unknown error' } }));
-    console.error('[Close Duplicate Tabs] OpenAI API error:', response.status, error);
+    console.error('[Smart Tab Organiser] OpenAI API error:', response.status, error);
     throw new Error(error.error?.message || `OpenAI API error: ${response.status}`);
   }
 
@@ -1151,7 +1151,7 @@ Return ONLY valid JSON, no other text. Example format:
   const content = data.choices[0]?.message?.content?.trim();
 
   if (!content) {
-    console.warn('[Close Duplicate Tabs] OpenAI: no content in response. Full response:', {
+    console.warn('[Smart Tab Organiser] OpenAI: no content in response. Full response:', {
       hasChoices: !!data.choices?.length,
       choicesLength: data.choices?.length ?? 0,
       firstChoice: data.choices?.[0] ? {
@@ -1167,7 +1167,7 @@ Return ONLY valid JSON, no other text. Example format:
   // Extract JSON from response (in case there's extra text)
   const jsonStr = extractJsonArray(content);
   if (!jsonStr) {
-    console.warn('[Close Duplicate Tabs] OpenAI: invalid format (no JSON array). Content preview:', content.slice(0, 200));
+    console.warn('[Smart Tab Organiser] OpenAI: invalid format (no JSON array). Content preview:', content.slice(0, 200));
     throw new Error('Invalid response format from OpenAI');
   }
 
@@ -1247,7 +1247,7 @@ Return ONLY valid JSON, no other text. Example format:
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: { message: 'Unknown error' } }));
-    console.error('[Close Duplicate Tabs] Claude API error:', response.status, error);
+    console.error('[Smart Tab Organiser] Claude API error:', response.status, error);
     throw new Error(error.error?.message || `Claude API error: ${response.status}`);
   }
 
@@ -1255,7 +1255,7 @@ Return ONLY valid JSON, no other text. Example format:
   const content = data.content[0]?.text?.trim();
 
   if (!content) {
-    console.warn('[Close Duplicate Tabs] Claude: no content in response. Full response:', {
+    console.warn('[Smart Tab Organiser] Claude: no content in response. Full response:', {
       hasContent: !!data.content?.length,
       contentLength: data.content?.length ?? 0,
       firstBlock: data.content?.[0] ? { type: data.content[0].type, textLength: data.content[0].text?.length } : null,
@@ -1269,7 +1269,7 @@ Return ONLY valid JSON, no other text. Example format:
   // Extract JSON from response (in case there's extra text)
   const jsonStr = extractJsonArray(content);
   if (!jsonStr) {
-    console.warn('[Close Duplicate Tabs] Claude: invalid format (no JSON array). Content preview:', content.slice(0, 200));
+    console.warn('[Smart Tab Organiser] Claude: invalid format (no JSON array). Content preview:', content.slice(0, 200));
     throw new Error('Invalid response format from Claude');
   }
 
@@ -1343,7 +1343,7 @@ Return ONLY valid JSON, no other text. Example format:
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: { message: 'Unknown error' } }));
-    console.error('[Close Duplicate Tabs] Gemini API error:', response.status, error);
+    console.error('[Smart Tab Organiser] Gemini API error:', response.status, error);
     throw new Error(error.error?.message || error.message || `Gemini API error: ${response.status}`);
   }
 
@@ -1351,7 +1351,7 @@ Return ONLY valid JSON, no other text. Example format:
   const content = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
 
   if (!content) {
-    console.warn('[Close Duplicate Tabs] Gemini: no content in response. Full response:', {
+    console.warn('[Smart Tab Organiser] Gemini: no content in response. Full response:', {
       hasCandidates: !!data.candidates?.length,
       finishReason: data.candidates?.[0]?.finishReason,
       usage: data.usageMetadata
@@ -1361,7 +1361,7 @@ Return ONLY valid JSON, no other text. Example format:
 
   const jsonStr = extractJsonArray(content);
   if (!jsonStr) {
-    console.warn('[Close Duplicate Tabs] Gemini: invalid format (no JSON array). Content preview:', content.slice(0, 200));
+    console.warn('[Smart Tab Organiser] Gemini: invalid format (no JSON array). Content preview:', content.slice(0, 200));
     throw new Error('Invalid response format from Gemini');
   }
 

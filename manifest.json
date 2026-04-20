@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Organise and Deduplicate Tabs",
+  "name": "Smart Tab Organiser",
   "version": "1.0.0",
-  "description": "Organise tabs with AI and close duplicate tabs, including those with different anchors. Keeps the tab with the highest anchor number.",
+  "description": "Dedupe tabs, tidy pinned URL lists, GitHub PR groups, and AI tab organisation. Optional cloud APIs use your keys only.",
   "permissions": [
     "tabs",
     "storage",

@@ -1,4 +1,4 @@
-// Popup script for Organise and Deduplicate Tabs extension
+// Popup script for Smart Tab Organiser extension
 
 document.addEventListener('DOMContentLoaded', async () => {
   const closeDuplicatesBtn = document.getElementById('closeDuplicatesBtn');
