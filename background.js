@@ -114,8 +114,6 @@ const PROVIDER_LABELS = {
   'chrome-ai': 'Chrome built-in AI',
   local: 'Local model'
 };
-// Cloud providers, in the order they are tried as fallbacks for one another.
-const ALL_PROVIDERS = ['openai', 'claude', 'gemini'];
 // Providers that never send tab data off the machine.
 const ON_DEVICE_PROVIDERS = ['chrome-ai', 'local'];
 
@@ -2061,44 +2059,85 @@ function providerIsConfigured(provider, settings) {
   return providerHasKey(provider, settings);
 }
 
+// The user's preferred fallback order (Options → Fallback order). Unknown entries are
+// dropped and missing providers appended, so old or partial saved values stay valid.
+const DEFAULT_FALLBACK_ORDER = ['chrome-ai', 'local', 'openai', 'claude', 'gemini'];
+
+function normalizeFallbackOrder(saved) {
+  const seen = new Set();
+  const order = [];
+  for (const p of (Array.isArray(saved) ? saved : [])) {
+    if (DEFAULT_FALLBACK_ORDER.includes(p) && !seen.has(p)) {
+      seen.add(p);
+      order.push(p);
+    }
+  }
+  for (const p of DEFAULT_FALLBACK_ORDER) {
+    if (!seen.has(p)) order.push(p);
+  }
+  return order;
+}
+
 /**
- * Build the ordered list of providers to attempt: primary first, then configured fallbacks.
+ * Walk the user's fallback order and work out, for every provider, whether it would join
+ * the chain — and if not, why. The chain itself falls out of the walk: primary first,
+ * then each eligible provider in order.
  *
- * Fallbacks respect the privacy boundary of the primary choice:
+ * Eligibility encodes the privacy boundary of the primary choice:
  * - A cloud primary falls back to the other cloud providers you hold keys for. It never
  *   silently switches to an on-device provider (surprise latency, possible model download).
- * - An on-device primary falls back to the OTHER on-device provider, since both keep tab
+ * - An on-device primary falls back to the other on-device provider, since both keep tab
  *   data on the machine: the local server needs a model name configured, and Chrome
  *   built-in AI only joins when its model is already downloaded — a fallback must never
  *   trigger a multi-gigabyte download the user didn't ask for.
  * - Cloud providers join an on-device chain only with the explicit aiAllowCloudFallback
- *   opt-in, because that fallback sends tab data off the machine.
+ *   opt-in, because that fallback sends tab data off the machine. Within the eligible
+ *   set, the user's order wins.
+ *
+ * Statuses: 'primary' | 'ready' (in the chain) | 'disabled' | 'no-key' |
+ * 'not-downloaded' | 'no-model-name' | 'cloud-opt-in-off' | 'not-after-cloud'.
+ * The options page renders these directly, so the UI can never drift from this logic.
  */
-async function buildProviderChain(settings) {
+async function describeProviderChain(settings) {
   const primary = settings.aiProvider || 'openai';
-  const chain = [primary];
-  if (settings.aiFallbackEnabled === false) return chain;
+  const order = normalizeFallbackOrder(settings.aiFallbackOrder);
+  const fallbackEnabled = settings.aiFallbackEnabled !== false;
+  const onDevicePrimary = isOnDeviceProvider(primary);
 
-  if (isOnDeviceProvider(primary)) {
-    const other = primary === 'chrome-ai' ? 'local' : 'chrome-ai';
-    if (other === 'local') {
-      if (settings.localModel?.trim()) chain.push('local');
-    } else {
-      const status = await checkChromeAiAvailability();
-      if (status.state === 'available') chain.push('chrome-ai');
-    }
-    if (settings.aiAllowCloudFallback === true) {
-      for (const p of ALL_PROVIDERS) {
-        if (providerHasKey(p, settings)) chain.push(p);
-      }
-    }
-  } else {
-    for (const p of ALL_PROVIDERS) {
-      if (p === primary) continue;
-      if (providerHasKey(p, settings)) chain.push(p);
-    }
+  // Only probe Nano availability when it could actually join the chain.
+  let chromeAiReady = false;
+  if (fallbackEnabled && onDevicePrimary && primary !== 'chrome-ai') {
+    const status = await checkChromeAiAvailability();
+    chromeAiReady = status.state === 'available';
   }
-  return chain;
+
+  const chain = [primary];
+  const entries = order.map((p) => {
+    if (p === primary) return { provider: p, status: 'primary' };
+    if (!fallbackEnabled) return { provider: p, status: 'disabled' };
+    if (onDevicePrimary) {
+      if (p === 'local') {
+        if (!settings.localModel?.trim()) return { provider: p, status: 'no-model-name' };
+      } else if (p === 'chrome-ai') {
+        if (!chromeAiReady) return { provider: p, status: 'not-downloaded' };
+      } else {
+        if (settings.aiAllowCloudFallback !== true) return { provider: p, status: 'cloud-opt-in-off' };
+        if (!providerHasKey(p, settings)) return { provider: p, status: 'no-key' };
+      }
+    } else {
+      if (isOnDeviceProvider(p)) return { provider: p, status: 'not-after-cloud' };
+      if (!providerHasKey(p, settings)) return { provider: p, status: 'no-key' };
+    }
+    chain.push(p);
+    return { provider: p, status: 'ready' };
+  });
+
+  return { primary, order, chain, entries, fallbackEnabled, onDevicePrimary };
+}
+
+/** Ordered list of providers to attempt: primary first, then eligible fallbacks in the user's order. */
+async function buildProviderChain(settings) {
+  return (await describeProviderChain(settings)).chain;
 }
 
 async function organizeTabs(preserveGroups, mergeIntoExisting, customInstructions, preserveGroupsMinTabs = 1) {
@@ -2108,7 +2147,7 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     // Get AI settings
     const settings = await chrome.storage.local.get([
       'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled', 'aiAllowCloudFallback',
-      'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
+      'aiFallbackOrder', 'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
       'localBaseUrl', 'localModel'
     ]);
 
@@ -2618,6 +2657,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'listLocalModels') {
     listLocalModels(request.baseUrl)
       .then(result => sendResponse({ success: true, ...result }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  // The options page renders the fallback order and hint from this, so what the user
+  // sees is exactly the chain organizeTabs would run — one source of truth.
+  if (request.action === 'describeProviderChain') {
+    (async () => {
+      const settings = await chrome.storage.local.get([
+        'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled',
+        'aiAllowCloudFallback', 'aiFallbackOrder', 'localModel'
+      ]);
+      return describeProviderChain(settings);
+    })()
+      .then(desc => sendResponse({ success: true, ...desc }))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }

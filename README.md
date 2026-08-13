@@ -26,7 +26,7 @@ A Chrome extension that **deduplicates tabs** (including smart rules for hashes/
 
 Two of the five AI providers run entirely on your own machine. Pick either one under **Options → Preferred AI Provider**.
 
-> **Fallbacks stay on-device by default.** With fallback enabled, an on-device primary only retries the *other* on-device provider — the local server joins the chain when a model name is configured, and Chrome built-in AI joins only when its model is already downloaded (a fallback never triggers the multi-gigabyte download). Cloud providers join an on-device chain only if you explicitly enable **Allow server-based (cloud) fallbacks** in Options, because that fallback sends tab titles and URLs off your machine when it runs. Cloud primaries fall back only to other cloud providers you hold keys for — never silently to anything else.
+> **Fallbacks stay on-device by default.** With fallback enabled, an on-device primary only retries the *other* on-device provider — the local server joins the chain when a model name is configured, and Chrome built-in AI joins only when its model is already downloaded (a fallback never triggers the multi-gigabyte download). Cloud providers join an on-device chain only if you explicitly enable **Allow server-based (cloud) fallbacks** in Options, because that fallback sends tab titles and URLs off your machine when it runs. Cloud primaries fall back only to other cloud providers you hold keys for — never silently to anything else. Eligible fallbacks are tried in the order you set under **Options → Fallback order** (your preferred provider always goes first); entries that can't run are shown greyed out with the reason.
 
 ### Chrome built-in AI (Gemini Nano)
 
