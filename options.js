@@ -31,6 +31,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const checkChromeAiBtn = document.getElementById('checkChromeAiBtn');
   const downloadChromeAiBtn = document.getElementById('downloadChromeAiBtn');
   const chromeAiStatus = document.getElementById('chromeAiStatus');
+  const aiAllowCloudFallbackCheckbox = document.getElementById('aiAllowCloudFallback');
+  const cloudFallbackRow = document.getElementById('cloudFallbackRow');
+  const providerCards = document.querySelectorAll('.provider-card[data-provider]');
 
   function updateModelRecommendedHint(provider, hintEl, selectEl) {
     if (!hintEl || !selectEl) return;
@@ -88,7 +91,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Load saved settings
   const settings = await chrome.storage.local.get([
     'ignoreQuery', 'ignoreHash', 'reloadTabs',
-    'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled',
+    'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled', 'aiAllowCloudFallback',
     'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
     'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting', 'sortTabsWithinGroupsByTitle', 'organizeOnClick', 'pinnedUrls',
     'githubToken', 'prGroupEnabled', 'bookmarksGroupColor', 'localBaseUrl', 'localModel'
@@ -109,6 +112,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   aiProviderSelect.value = settings.aiProvider || 'openai';
   aiFallbackEnabledCheckbox.checked = settings.aiFallbackEnabled !== false; // default to true
+  aiAllowCloudFallbackCheckbox.checked = settings.aiAllowCloudFallback === true; // default off — explicit opt-in
   const openaiResolved = globalThis.populateModelSelect(openaiModelSelect, 'openai', settings.openaiModel);
   const claudeResolved = globalThis.populateModelSelect(claudeModelSelect, 'claude', settings.claudeModel);
   const geminiResolved = globalThis.populateModelSelect(geminiModelSelect, 'gemini', settings.geminiModel);
@@ -186,36 +190,92 @@ document.addEventListener('DOMContentLoaded', async () => {
     local: 'Local model'
   };
   const ON_DEVICE_PROVIDERS_OPTIONS = ['chrome-ai', 'local'];
+  const CLOUD_PROVIDERS_OPTIONS = ['openai', 'claude', 'gemini'];
+
+  // Last Chrome AI availability state reported by the service worker
+  // ('available' | 'downloadable' | 'downloading' | 'unavailable' | 'unsupported' | null = not checked yet).
+  let chromeAiState = null;
+
+  function updateActiveProviderCard() {
+    const primary = aiProviderSelect.value || 'openai';
+    providerCards.forEach((card) => {
+      card.classList.toggle('provider-card--active', card.dataset.provider === primary);
+    });
+  }
+
+  // The cloud-fallback opt-in only means something when the primary is on-device.
+  function updateCloudFallbackRowVisibility() {
+    const primary = aiProviderSelect.value || 'openai';
+    cloudFallbackRow.style.display = ON_DEVICE_PROVIDERS_OPTIONS.includes(primary) ? '' : 'none';
+  }
+
+  // Mirrors buildProviderChain in background.js so the hint shows the order that will actually run.
   function updateFallbackHint() {
     if (!aiFallbackHintEl) return;
     const primary = aiProviderSelect.value || 'openai';
-    if (ON_DEVICE_PROVIDERS_OPTIONS.includes(primary)) {
-      aiFallbackHintEl.textContent =
-        `${PROVIDER_LABELS_OPTIONS[primary]} runs on your device and never falls back — falling back to a cloud provider would send your tab data off the machine.`;
-      return;
-    }
+    const label = (p) => PROVIDER_LABELS_OPTIONS[p] || p;
+
     if (!aiFallbackEnabledCheckbox.checked) {
-      aiFallbackHintEl.textContent = `Fallback disabled — only ${PROVIDER_LABELS_OPTIONS[primary] || primary} will be used.`;
+      aiFallbackHintEl.textContent = `Fallback disabled — only ${label(primary)} will be used.`;
       return;
     }
+
     const keys = {
       openai: openaiKeyInput.value.trim(),
       claude: claudeKeyInput.value.trim(),
       gemini: geminiKeyInput.value.trim(),
     };
-    const fallbacks = ['openai', 'claude', 'gemini']
-      .filter((p) => p !== primary && keys[p])
-      .map((p) => PROVIDER_LABELS_OPTIONS[p]);
-    if (fallbacks.length === 0) {
-      aiFallbackHintEl.textContent = `No fallback providers configured — add a Claude, OpenAI or Gemini API key above to enable automatic fallback.`;
+    const cloudWithKeys = CLOUD_PROVIDERS_OPTIONS.filter((p) => keys[p]);
+
+    if (ON_DEVICE_PROVIDERS_OPTIONS.includes(primary)) {
+      const chain = [primary];
+      const notes = [];
+      if (primary === 'chrome-ai') {
+        if (localModelInput.value.trim()) {
+          chain.push('local');
+        } else {
+          notes.push('Set a Local model name to enable the on-device fallback.');
+        }
+      } else {
+        if (chromeAiState === 'available') {
+          chain.push('chrome-ai');
+        } else {
+          notes.push('Chrome built-in AI joins the chain once its model is downloaded.');
+        }
+      }
+      let cloudNote = 'Cloud providers will never be used.';
+      if (aiAllowCloudFallbackCheckbox.checked) {
+        if (cloudWithKeys.length > 0) {
+          chain.push(...cloudWithKeys);
+          cloudNote = 'If a cloud fallback runs, tab titles and URLs are sent to that provider.';
+        } else {
+          cloudNote = 'Cloud fallback is allowed, but no cloud provider has an API key yet.';
+        }
+      }
+      const order = chain.length > 1
+        ? `Fallback order: ${chain.map(label).join(' → ')}.`
+        : `No fallback available — only ${label(primary)} will be used.`;
+      aiFallbackHintEl.textContent = [order, ...notes, cloudNote].join(' ');
       return;
     }
-    aiFallbackHintEl.textContent = `Fallback order: ${PROVIDER_LABELS_OPTIONS[primary] || primary} → ${fallbacks.join(' → ')}.`;
+
+    const fallbacks = cloudWithKeys.filter((p) => p !== primary);
+    if (fallbacks.length === 0) {
+      aiFallbackHintEl.textContent = 'No fallback providers configured — add an OpenAI, Claude or Gemini API key above to enable automatic fallback.';
+      return;
+    }
+    aiFallbackHintEl.textContent = `Fallback order: ${label(primary)} → ${fallbacks.map(label).join(' → ')}. Cloud primaries never fall back to on-device providers.`;
+  }
+
+  function refreshProviderUi() {
+    updateActiveProviderCard();
+    updateCloudFallbackRowVisibility();
+    updateFallbackHint();
   }
 
   aiProviderSelect.addEventListener('change', () => {
     chrome.storage.local.set({ aiProvider: aiProviderSelect.value });
-    updateFallbackHint();
+    refreshProviderUi();
     if (aiProviderSelect.value === 'chrome-ai') {
       checkChromeAi();
     }
@@ -226,11 +286,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateFallbackHint();
   });
 
+  aiAllowCloudFallbackCheckbox.addEventListener('change', () => {
+    chrome.storage.local.set({ aiAllowCloudFallback: aiAllowCloudFallbackCheckbox.checked });
+    updateFallbackHint();
+  });
+
   // Also refresh the hint when an API key changes (fallback list depends on which keys are present)
   [openaiKeyInput, claudeKeyInput, geminiKeyInput].forEach((input) => {
     input.addEventListener('input', updateFallbackHint);
   });
-  updateFallbackHint();
+  refreshProviderUi();
 
   localBaseUrlInput.addEventListener('input', () => {
     chrome.storage.local.set({ localBaseUrl: localBaseUrlInput.value.trim() });
@@ -238,6 +303,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   localModelInput.addEventListener('input', () => {
     chrome.storage.local.set({ localModel: localModelInput.value.trim() });
+    updateFallbackHint(); // the on-device fallback chain depends on a model name being set
   });
 
   // Ask the service worker to check the local server, so the result reflects
@@ -274,27 +340,40 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  async function checkChromeAi() {
+  // silent: refresh chromeAiState (for the fallback hint) without touching the status box.
+  async function checkChromeAi({ silent = false } = {}) {
     checkChromeAiBtn.disabled = true;
-    chromeAiStatus.textContent = 'Checking on-device model...';
-    chromeAiStatus.className = 'status info';
+    if (!silent) {
+      chromeAiStatus.textContent = 'Checking on-device model...';
+      chromeAiStatus.className = 'status info';
+    }
     try {
       const result = await chrome.runtime.sendMessage({ action: 'checkChromeAI' });
       if (!result.success) {
-        chromeAiStatus.textContent = result.error || 'Could not check Chrome built-in AI';
-        chromeAiStatus.className = 'status error';
+        chromeAiState = null;
+        if (!silent) {
+          chromeAiStatus.textContent = result.error || 'Could not check Chrome built-in AI';
+          chromeAiStatus.className = 'status error';
+        }
         return;
       }
-      chromeAiStatus.textContent = result.message;
-      chromeAiStatus.className = result.available
-        ? (result.state === 'available' ? 'status success' : 'status info')
-        : 'status error';
+      chromeAiState = result.state;
       downloadChromeAiBtn.hidden = !(result.available && result.state !== 'available');
+      if (!silent) {
+        chromeAiStatus.textContent = result.message;
+        chromeAiStatus.className = result.available
+          ? (result.state === 'available' ? 'status success' : 'status info')
+          : 'status error';
+      }
     } catch (error) {
-      chromeAiStatus.textContent = 'Error: ' + error.message;
-      chromeAiStatus.className = 'status error';
+      chromeAiState = null;
+      if (!silent) {
+        chromeAiStatus.textContent = 'Error: ' + error.message;
+        chromeAiStatus.className = 'status error';
+      }
     } finally {
       checkChromeAiBtn.disabled = false;
+      updateFallbackHint(); // the on-device fallback chain depends on this state
     }
   }
 
@@ -323,6 +402,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       chromeAiStatus.textContent = 'Gemini Nano is downloaded and ready to use on this device.';
       chromeAiStatus.className = 'status success';
       downloadChromeAiBtn.hidden = true;
+      chromeAiState = 'available';
+      updateFallbackHint();
     } catch (error) {
       chromeAiStatus.textContent = 'Download failed: ' + error.message;
       chromeAiStatus.className = 'status error';
@@ -331,10 +412,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // Surface availability up front for anyone already using the on-device model.
-  if (aiProviderSelect.value === 'chrome-ai') {
-    checkChromeAi();
-  }
+  // Check availability up front: loudly (status box) when Chrome AI is the primary,
+  // silently otherwise — the fallback hint needs the state either way.
+  checkChromeAi({ silent: aiProviderSelect.value !== 'chrome-ai' });
 
   customInstructionsOptions.addEventListener('input', () => {
     chrome.storage.local.set({ customInstructionsOptions: customInstructionsOptions.value.trim() });

@@ -56,8 +56,8 @@ body {
 }
 
 header {
-  margin-bottom: 40px;
-  padding-bottom: 20px;
+  margin-bottom: 28px;
+  padding-bottom: 16px;
   border-bottom: 2px solid var(--border-soft);
 }
 
@@ -75,14 +75,19 @@ h1 {
 
 .model-recommended-hint {
   margin-top: 4px;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--accent);
+  line-height: 1.4;
+}
+
+.model-recommended-hint:empty {
+  display: none;
 }
 
 .content {
   display: flex;
   flex-direction: column;
-  gap: 30px;
+  gap: 22px;
 }
 
 @media (min-width: 1200px) {
@@ -120,7 +125,7 @@ h1 {
 
 section {
   background: var(--surface-elevated);
-  padding: 25px;
+  padding: 22px;
   border-radius: var(--radius);
   border: 1px solid var(--border-soft);
   box-shadow: var(--shadow-sm);
@@ -142,8 +147,8 @@ h2 {
 
 .section-description {
   color: var(--text-muted);
-  font-size: 14px;
-  margin-bottom: 20px;
+  font-size: 13px;
+  margin-bottom: 16px;
 }
 
 .setting-item {
@@ -151,10 +156,10 @@ h2 {
   align-items: flex-start;
   justify-content: space-between;
   gap: 20px;
-  padding: 20px;
+  padding: 14px 16px;
   background: var(--surface);
   border-radius: var(--radius-sm);
-  margin-bottom: 15px;
+  margin-bottom: 10px;
   border: 1px solid var(--border-soft);
 }
 
@@ -168,10 +173,10 @@ h2 {
 
 .setting-label {
   display: block;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 500;
   color: var(--text);
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 .setting-description {
@@ -313,6 +318,11 @@ input:focus + .slider {
   line-height: 1.5;
   position: relative;
   white-space: pre-line;
+}
+
+/* An empty status box is dead space — render nothing until there is a message. */
+.status:empty {
+  display: none;
 }
 
 .status.success,
@@ -497,19 +507,6 @@ footer {
   box-shadow: 0 0 0 3px var(--accent-focus);
 }
 
-/* On-device provider controls: inputs, action button, and inline status */
-.local-model-controls {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 10px;
-  margin-top: 12px;
-}
-
-.local-model-controls .status:empty {
-  display: none;
-}
-
 .local-model-buttons {
   display: flex;
   flex-wrap: wrap;
@@ -525,25 +522,182 @@ footer {
   text-decoration: underline;
 }
 
-/* AI section uses full width and two columns for settings */
-.settings-section--ai {
-  display: block;
+/* ---- AI section: provider cards grouped under subsection headings ---- */
+
+.subsection-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 26px 0 12px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border-soft);
 }
 
-@media (min-width: 900px) {
-  .settings-section--ai {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 15px;
+.subsection-note {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-bottom: 15px;
+}
+
+@media (min-width: 1000px) {
+  .provider-grid {
+    grid-template-columns: repeat(3, 1fr);
   }
 
-  .settings-section--ai h2,
-  .settings-section--ai .section-description,
-  .settings-section--ai .setting-item--stacked {
-    grid-column: 1 / -1;
+  .provider-grid--two {
+    grid-template-columns: repeat(2, 1fr);
   }
+}
 
-  .settings-section--ai .setting-item {
-    margin-bottom: 0;
-  }
+.provider-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.provider-card--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-focus);
+}
+
+.provider-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.primary-badge {
+  display: none;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  background: var(--accent-focus);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.provider-card--active .primary-badge {
+  display: inline-block;
+}
+
+.provider-card-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.field-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.field-label a {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.field-label a:hover {
+  text-decoration: underline;
+}
+
+.provider-card .api-key-input,
+.provider-card .provider-select,
+.provider-card .input-with-toggle {
+  max-width: none;
+  min-width: 0;
+  width: 100%;
+}
+
+.provider-card .btn {
+  padding: 9px 16px;
+  font-size: 13px;
+}
+
+.setup-notes {
+  margin-top: auto;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-top: 1px dashed var(--border-soft);
+  padding-top: 8px;
+}
+
+.setup-notes summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.setup-notes summary:hover {
+  color: var(--accent);
+}
+
+.setup-notes p {
+  margin-top: 8px;
+  line-height: 1.5;
+}
+
+.setup-notes code {
+  background: var(--surface-elevated);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 11px;
+  border: 1px solid var(--border-soft);
+  overflow-wrap: anywhere;
+}
+
+/* Computed fallback order, shown under the fallback toggles */
+.fallback-hint {
+  font-size: 13px;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  margin-bottom: 15px;
+  line-height: 1.5;
+}
+
+.fallback-hint strong {
+  color: var(--text);
+}
+
+.fallback-hint:empty {
+  display: none;
 }

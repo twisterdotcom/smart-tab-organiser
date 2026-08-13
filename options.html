@@ -22,7 +22,7 @@
         <div class="info-content">
           <p><strong>Click the extension icon</strong> to deduplicate tabs and tidy your pinned tabs (unpin tabs not in your list, pin matching ones, reorder to match your list). If no tabs are pinned yet, the extension will pin tabs from your list (opening new tabs for any URL not already open). Duplicate detection uses your settings (e.g. keep highest anchor). The icon badge shows how many duplicate tabs are open.</p>
           <p><strong>Three ways to run:</strong> (1) Click the extension icon to deduplicate and tidy pinned tabs. (2) Right-click → "Deduplicate and organize tabs with AI" to dedupe and reorganize with AI. (3) Right-click → "Deduplicate and tidy pinned tabs" does the same as the icon click.</p>
-          <p><strong>AI Tab Organization:</strong> Use "Organize tabs with AI" from the context menu, keyboard shortcut (⌘+Shift+O / Ctrl+Shift+O), or "Organize Tabs" in the popup. Configure your API keys below to enable it.</p>
+          <p><strong>AI Tab Organization:</strong> Use "Organize tabs with AI" from the context menu, keyboard shortcut (⌘+Shift+O / Ctrl+Shift+O), or "Organize Tabs" in the popup. Configure a provider below — cloud (your own API key) or fully on-device.</p>
         </div>
       </section>
 
@@ -157,58 +157,13 @@
       </section>
       
       <section class="settings-section settings-section--ai">
-        <h2>AI Tab Organization Settings</h2>
-        <p class="section-description">Configure AI-powered tab organization. Cloud providers need an API key, stored locally and never shared. The two on-device providers need no key and send nothing over the network.</p>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="openaiKey">OpenAI API Key</label>
-            <p class="setting-description">
-              Enter your OpenAI API key to use GPT models for tab organization. Leave empty to disable.
-              <br><strong>Get your key:</strong> <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>
-            </p>
-          </div>
-          <div class="input-with-toggle">
-            <input type="password" id="openaiKey" class="api-key-input" placeholder="sk-...">
-            <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
-          </div>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="claudeKey">Claude API Key</label>
-            <p class="setting-description">
-              Enter your Anthropic Claude API key to use Claude models for tab organization. Leave empty to disable.
-              <br><strong>Get your key:</strong> <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com/settings/keys</a>
-            </p>
-          </div>
-          <div class="input-with-toggle">
-            <input type="password" id="claudeKey" class="api-key-input" placeholder="sk-ant-...">
-            <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
-          </div>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="geminiKey">Gemini API Key</label>
-            <p class="setting-description">
-              Enter your Google Gemini API key to use Gemini models for tab organization. Leave empty to disable.
-              <br><strong>Get your key:</strong> <a href="https://aistudio.google.com/app/apikey" target="_blank">aistudio.google.com/app/apikey</a>
-            </p>
-          </div>
-          <div class="input-with-toggle">
-            <input type="password" id="geminiKey" class="api-key-input" placeholder="AIza...">
-            <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
-          </div>
-        </div>
-        
+        <h2>AI Tab Organization</h2>
+        <p class="section-description">Pick a provider, configure it in its card below, and choose what happens if it fails. Cloud providers need an API key (stored locally, never shared). On-device providers need no key and send nothing over the network.</p>
+
         <div class="setting-item">
           <div class="setting-info">
             <label class="setting-label" for="aiProvider">Preferred AI Provider</label>
-            <p class="setting-description">
-              Choose which AI provider to use for tab organization. Cloud providers must have a valid API key configured.
-              <br><strong>On-device options send nothing over the network:</strong> "Chrome built-in AI" uses Gemini Nano inside Chrome, and "Local model" talks to Ollama or another server running on your own machine.
-            </p>
+            <p class="setting-description">Used whenever you organize tabs with AI. The card of the selected provider is highlighted below.</p>
           </div>
           <select id="aiProvider" class="provider-select">
             <option value="openai">OpenAI (cloud)</option>
@@ -219,14 +174,88 @@
           </select>
         </div>
 
+        <h3 class="subsection-title">Cloud providers <span class="subsection-note">API key required — tab titles and URLs are sent to the provider you use</span></h3>
+        <div class="provider-grid">
+          <div class="provider-card" data-provider="openai">
+            <div class="provider-card-header">OpenAI <span class="primary-badge">Primary</span></div>
+            <label class="field-label" for="openaiKey">API key <a href="https://platform.openai.com/api-keys" target="_blank">Get a key ↗</a></label>
+            <div class="input-with-toggle">
+              <input type="password" id="openaiKey" class="api-key-input" placeholder="sk-...">
+              <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
+            </div>
+            <label class="field-label" for="openaiModel">Model</label>
+            <select id="openaiModel" class="provider-select" aria-describedby="openaiModelRecommended"></select>
+            <p class="model-recommended-hint" id="openaiModelRecommended"></p>
+          </div>
+
+          <div class="provider-card" data-provider="claude">
+            <div class="provider-card-header">Claude <span class="primary-badge">Primary</span></div>
+            <label class="field-label" for="claudeKey">API key <a href="https://console.anthropic.com/settings/keys" target="_blank">Get a key ↗</a></label>
+            <div class="input-with-toggle">
+              <input type="password" id="claudeKey" class="api-key-input" placeholder="sk-ant-...">
+              <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
+            </div>
+            <label class="field-label" for="claudeModel">Model</label>
+            <select id="claudeModel" class="provider-select" aria-describedby="claudeModelRecommended"></select>
+            <p class="model-recommended-hint" id="claudeModelRecommended"></p>
+          </div>
+
+          <div class="provider-card" data-provider="gemini">
+            <div class="provider-card-header">Gemini <span class="primary-badge">Primary</span></div>
+            <label class="field-label" for="geminiKey">API key <a href="https://aistudio.google.com/app/apikey" target="_blank">Get a key ↗</a></label>
+            <div class="input-with-toggle">
+              <input type="password" id="geminiKey" class="api-key-input" placeholder="AIza...">
+              <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
+            </div>
+            <label class="field-label" for="geminiModel">Model</label>
+            <select id="geminiModel" class="provider-select" aria-describedby="geminiModelRecommended"></select>
+            <p class="model-recommended-hint" id="geminiModelRecommended"></p>
+          </div>
+        </div>
+
+        <h3 class="subsection-title">On-device providers <span class="subsection-note">No API key — tab data never leaves this machine</span></h3>
+        <div class="provider-grid provider-grid--two">
+          <div class="provider-card" data-provider="chrome-ai">
+            <div class="provider-card-header">Chrome built-in AI <span class="primary-badge">Primary</span></div>
+            <p class="provider-card-desc">Gemini Nano, running inside Chrome itself. Chrome downloads the model (a few GB) once; after that it works fully offline.</p>
+            <div class="local-model-buttons">
+              <button type="button" id="checkChromeAiBtn" class="btn btn-secondary">Check availability</button>
+              <button type="button" id="downloadChromeAiBtn" class="btn btn-secondary" hidden>Download model</button>
+            </div>
+            <div id="chromeAiStatus" class="status"></div>
+            <details class="setup-notes">
+              <summary>Requirements &amp; notes</summary>
+              <p>Chrome 138+ on desktop, about 22 GB of free disk space, and either 4 GB+ of VRAM or 16 GB+ of RAM. Gemini Nano is much smaller than cloud models, so grouping is coarser; tabs are organized in batches of 20 to fit its context window.</p>
+            </details>
+          </div>
+
+          <div class="provider-card" data-provider="local">
+            <div class="provider-card-header">Local model <span class="primary-badge">Primary</span></div>
+            <p class="provider-card-desc">Any local server with an OpenAI-compatible API: Ollama, LM Studio, llama.cpp, vLLM.</p>
+            <label class="field-label" for="localBaseUrl">Server address</label>
+            <input type="text" id="localBaseUrl" class="api-key-input" placeholder="http://localhost:11434/v1" spellcheck="false">
+            <label class="field-label" for="localModel">Model name</label>
+            <input type="text" id="localModel" class="api-key-input" placeholder="llama3.1:8b" spellcheck="false">
+            <div class="local-model-buttons">
+              <button type="button" id="testLocalModelBtn" class="btn btn-secondary">Test connection</button>
+            </div>
+            <div id="localModelStatus" class="status"></div>
+            <details class="setup-notes">
+              <summary>Ollama / LM Studio setup</summary>
+              <p>Ollama must be started with extension requests allowed, otherwise it rejects them: <code>OLLAMA_ORIGINS="chrome-extension://*" ollama serve</code></p>
+              <p>In LM Studio, enable CORS in the local server settings; llama.cpp's server allows this by default. Enter the model name exactly as your server reports it — "Test connection" lists what it can see.</p>
+            </details>
+          </div>
+        </div>
+
+        <h3 class="subsection-title">If the provider fails</h3>
         <div class="setting-item">
           <div class="setting-info">
-            <label class="setting-label">Use fallback providers if primary fails</label>
+            <label class="setting-label">Use fallback providers</label>
             <p class="setting-description">
-              When enabled, if your preferred provider fails (CORS block, invalid key, rate limit, outage, bad response, etc.), the extension automatically tries your other configured providers in order until one succeeds. Add API keys above for any providers you want to use as fallbacks.
-              <br><strong>On-device providers never fall back</strong>, since falling back to a cloud provider would send your tab data off the machine — the reason for choosing on-device in the first place.
+              If your preferred provider fails (invalid key, rate limit, outage, bad response), automatically try the other configured providers in order.
+              An on-device primary only falls back to the other on-device provider, so tab data stays on this machine.
             </p>
-            <p id="aiFallbackHint" class="setting-description model-recommended-hint"></p>
           </div>
           <label class="switch">
             <input type="checkbox" id="aiFallbackEnabled">
@@ -234,75 +263,23 @@
           </label>
         </div>
 
-        <div class="setting-item setting-item--stacked">
+        <div class="setting-item" id="cloudFallbackRow">
           <div class="setting-info">
-            <label class="setting-label">Chrome built-in AI (Gemini Nano)</label>
+            <label class="setting-label">Allow server-based (cloud) fallbacks</label>
             <p class="setting-description">
-              Runs entirely inside Chrome — no API key, no network requests, nothing leaves your computer. Requires Chrome 138+ on desktop,
-              about 22 GB of free disk space, and either 4 GB+ of VRAM or 16 GB+ of RAM. Chrome downloads the model (a few GB) the first time it is used.
-              <br><strong>Note:</strong> Gemini Nano is much smaller than cloud models, so grouping is coarser. Tabs are organized in batches of 20 to fit its context window.
+              Also allow cloud providers with a saved API key as a last resort when the on-device options fail.
+              <br><strong>When this happens, tab titles and URLs are sent to that cloud provider.</strong> Leave off to guarantee tab data never leaves this machine.
             </p>
           </div>
-          <div class="local-model-controls">
-            <div class="local-model-buttons">
-              <button type="button" id="checkChromeAiBtn" class="btn btn-secondary">Check availability</button>
-              <button type="button" id="downloadChromeAiBtn" class="btn btn-secondary" hidden>Download model</button>
-            </div>
-            <div id="chromeAiStatus" class="status"></div>
-          </div>
+          <label class="switch">
+            <input type="checkbox" id="aiAllowCloudFallback">
+            <span class="slider"></span>
+          </label>
         </div>
 
-        <div class="setting-item setting-item--stacked">
-          <div class="setting-info">
-            <label class="setting-label" for="localModel">Local model (Ollama / LM Studio / llama.cpp)</label>
-            <p class="setting-description">
-              Uses any local server that exposes an OpenAI-compatible API. Enter the model name exactly as your server reports it (e.g. <code>llama3.1:8b</code>, <code>qwen3:8b</code>).
-              <br><strong>Ollama must be started with extension requests allowed</strong>, otherwise it rejects them:
-              <code>OLLAMA_ORIGINS="chrome-extension://*" ollama serve</code>
-              <br>In LM Studio, enable CORS in the local server settings. llama.cpp's server allows this by default.
-            </p>
-          </div>
-          <div class="local-model-controls">
-            <input type="text" id="localBaseUrl" class="api-key-input" placeholder="http://localhost:11434/v1" spellcheck="false">
-            <input type="text" id="localModel" class="api-key-input" placeholder="llama3.1:8b" spellcheck="false">
-            <button type="button" id="testLocalModelBtn" class="btn btn-secondary">Test connection</button>
-            <div id="localModelStatus" class="status"></div>
-          </div>
-        </div>
+        <p id="aiFallbackHint" class="fallback-hint"></p>
 
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="openaiModel">OpenAI Model</label>
-            <p class="setting-description">
-              Choose which OpenAI model to use for tab organization. The recommended model is marked in the list.
-            </p>
-            <p class="setting-description model-recommended-hint" id="openaiModelRecommended"></p>
-          </div>
-          <select id="openaiModel" class="provider-select" aria-describedby="openaiModelRecommended"></select>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="claudeModel">Claude Model</label>
-            <p class="setting-description">
-              Choose which Claude model to use for tab organization. The recommended model is marked in the list.
-            </p>
-            <p class="setting-description model-recommended-hint" id="claudeModelRecommended"></p>
-          </div>
-          <select id="claudeModel" class="provider-select" aria-describedby="claudeModelRecommended"></select>
-        </div>
-        
-        <div class="setting-item">
-          <div class="setting-info">
-            <label class="setting-label" for="geminiModel">Gemini Model</label>
-            <p class="setting-description">
-              Choose which Gemini model to use for tab organization. The recommended model is marked in the list.
-            </p>
-            <p class="setting-description model-recommended-hint" id="geminiModelRecommended"></p>
-          </div>
-          <select id="geminiModel" class="provider-select" aria-describedby="geminiModelRecommended"></select>
-        </div>
-        
+        <h3 class="subsection-title">Organisation behaviour</h3>
         <div id="custom-instructions" class="setting-item setting-item--stacked">
           <div class="setting-info">
             <label class="setting-label" for="customInstructionsOptions">Custom Instructions</label>

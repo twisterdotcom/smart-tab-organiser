@@ -76,7 +76,7 @@ Two AI providers involve **no third-party service and no network transmission of
 
 No API key is required for either option, and neither sends anything to the extension author.
 
-**No silent fallback to the cloud**: the extension can automatically retry a different provider when the selected one fails. This fallback is deliberately disabled when you select an on-device provider, so a local failure never causes your tab data to be sent to a cloud AI service instead. Cloud providers only fall back to other cloud providers you have configured a key for.
+**No silent fallback to the cloud**: the extension can automatically retry a different provider when the selected one fails. When your selected provider is on-device, it only retries the other on-device provider — both keep tab data on your machine. A cloud provider is used as a fallback for an on-device provider **only** if you explicitly enable "Allow server-based (cloud) fallbacks" in the settings; when such a fallback runs, tab titles and URLs are sent to that cloud provider. With that option off (the default), a local failure never causes tab data to leave your machine. Cloud providers only fall back to other cloud providers you have configured a key for.
 
 ### GitHub API (optional)
 

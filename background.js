@@ -2054,18 +2054,45 @@ function providerHasKey(provider, settings) {
   return false;
 }
 
+/** True if the provider has everything it needs from settings to be worth attempting. */
+function providerIsConfigured(provider, settings) {
+  if (provider === 'chrome-ai') return true; // no key or name; availability is checked at call time
+  if (provider === 'local') return !!settings.localModel?.trim();
+  return providerHasKey(provider, settings);
+}
+
 /**
  * Build the ordered list of providers to attempt: primary first, then configured fallbacks.
  *
- * Picking an on-device provider is a privacy decision, so those never fall back to anything.
- * Falling back to a cloud provider would silently send tab data off the machine, defeating
- * the reason for choosing on-device; falling back to the other on-device provider could
- * trigger a surprise multi-gigabyte model download. On-device failures surface instead.
+ * Fallbacks respect the privacy boundary of the primary choice:
+ * - A cloud primary falls back to the other cloud providers you hold keys for. It never
+ *   silently switches to an on-device provider (surprise latency, possible model download).
+ * - An on-device primary falls back to the OTHER on-device provider, since both keep tab
+ *   data on the machine: the local server needs a model name configured, and Chrome
+ *   built-in AI only joins when its model is already downloaded — a fallback must never
+ *   trigger a multi-gigabyte download the user didn't ask for.
+ * - Cloud providers join an on-device chain only with the explicit aiAllowCloudFallback
+ *   opt-in, because that fallback sends tab data off the machine.
  */
-function buildProviderChain(settings) {
+async function buildProviderChain(settings) {
   const primary = settings.aiProvider || 'openai';
   const chain = [primary];
-  if (settings.aiFallbackEnabled !== false && !isOnDeviceProvider(primary)) {
+  if (settings.aiFallbackEnabled === false) return chain;
+
+  if (isOnDeviceProvider(primary)) {
+    const other = primary === 'chrome-ai' ? 'local' : 'chrome-ai';
+    if (other === 'local') {
+      if (settings.localModel?.trim()) chain.push('local');
+    } else {
+      const status = await checkChromeAiAvailability();
+      if (status.state === 'available') chain.push('chrome-ai');
+    }
+    if (settings.aiAllowCloudFallback === true) {
+      for (const p of ALL_PROVIDERS) {
+        if (providerHasKey(p, settings)) chain.push(p);
+      }
+    }
+  } else {
     for (const p of ALL_PROVIDERS) {
       if (p === primary) continue;
       if (providerHasKey(p, settings)) chain.push(p);
@@ -2080,7 +2107,7 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
 
     // Get AI settings
     const settings = await chrome.storage.local.get([
-      'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled',
+      'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled', 'aiAllowCloudFallback',
       'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
       'localBaseUrl', 'localModel'
     ]);
@@ -2088,14 +2115,18 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     // Use custom instructions from parameter, or fall back to saved options instructions
     const instructions = customInstructions || settings.customInstructionsOptions || '';
 
-    // Validate that at least one valid provider key is available
-    const providerChain = buildProviderChain(settings);
-    const usableChain = providerChain.filter((p) => providerHasKey(p, settings));
+    // Validate that at least one provider in the chain is configured
+    // (on-device providers need no API key: chrome-ai needs nothing, local needs a model name)
+    const providerChain = await buildProviderChain(settings);
+    const usableChain = providerChain.filter((p) => providerIsConfigured(p, settings));
     if (usableChain.length === 0) {
-      const primaryLabel = providerLabel(providerChain[0] || 'openai');
+      const primary = providerChain[0] || 'openai';
+      const fix = primary === 'local'
+        ? 'Set a model name in Smart Tab Organiser settings (e.g. "llama3.1:8b").'
+        : 'Add a key in Smart Tab Organiser settings, or configure another provider as fallback.';
       return {
         success: false,
-        error: `${primaryLabel} API key not configured. Add a key in Smart Tab Organiser settings, or configure another provider as fallback.`,
+        error: `${providerLabel(primary)} is not configured. ${fix}`,
       };
     }
 
