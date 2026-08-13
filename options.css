@@ -490,6 +490,25 @@ footer {
   box-shadow: 0 0 0 3px var(--accent-focus);
 }
 
+/* On-device provider controls: inputs, action button, and inline status */
+.local-model-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.local-model-controls .status:empty {
+  display: none;
+}
+
+.local-model-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .setting-description a {
   color: var(--accent);
   text-decoration: none;

@@ -158,7 +158,7 @@
       
       <section class="settings-section settings-section--ai">
         <h2>AI Tab Organization Settings</h2>
-        <p class="section-description">Configure API keys for AI-powered tab organization. Your API keys are stored locally and never shared.</p>
+        <p class="section-description">Configure AI-powered tab organization. Cloud providers need an API key, stored locally and never shared. The two on-device providers need no key and send nothing over the network.</p>
         
         <div class="setting-item">
           <div class="setting-info">
@@ -206,16 +206,55 @@
           <div class="setting-info">
             <label class="setting-label" for="aiProvider">Preferred AI Provider</label>
             <p class="setting-description">
-              Choose which AI provider to use for tab organization. The selected provider must have a valid API key configured.
+              Choose which AI provider to use for tab organization. Cloud providers must have a valid API key configured.
+              <br><strong>On-device options send nothing over the network:</strong> "Chrome built-in AI" uses Gemini Nano inside Chrome, and "Local model" talks to Ollama or another server running on your own machine.
             </p>
           </div>
           <select id="aiProvider" class="provider-select">
-            <option value="openai">OpenAI</option>
-            <option value="claude">Claude</option>
-            <option value="gemini">Gemini</option>
+            <option value="openai">OpenAI (cloud)</option>
+            <option value="claude">Claude (cloud)</option>
+            <option value="gemini">Gemini (cloud)</option>
+            <option value="chrome-ai">Chrome built-in AI (on-device)</option>
+            <option value="local">Local model — Ollama / LM Studio (on-device)</option>
           </select>
         </div>
-        
+
+        <div class="setting-item setting-item--stacked">
+          <div class="setting-info">
+            <label class="setting-label">Chrome built-in AI (Gemini Nano)</label>
+            <p class="setting-description">
+              Runs entirely inside Chrome — no API key, no network requests, nothing leaves your computer. Requires Chrome 138+ on desktop,
+              about 22 GB of free disk space, and either 4 GB+ of VRAM or 16 GB+ of RAM. Chrome downloads the model (a few GB) the first time it is used.
+              <br><strong>Note:</strong> Gemini Nano is much smaller than cloud models, so grouping is coarser. Tabs are organized in batches of 20 to fit its context window.
+            </p>
+          </div>
+          <div class="local-model-controls">
+            <div class="local-model-buttons">
+              <button type="button" id="checkChromeAiBtn" class="btn btn-secondary">Check availability</button>
+              <button type="button" id="downloadChromeAiBtn" class="btn btn-secondary" hidden>Download model</button>
+            </div>
+            <div id="chromeAiStatus" class="status"></div>
+          </div>
+        </div>
+
+        <div class="setting-item setting-item--stacked">
+          <div class="setting-info">
+            <label class="setting-label" for="localModel">Local model (Ollama / LM Studio / llama.cpp)</label>
+            <p class="setting-description">
+              Uses any local server that exposes an OpenAI-compatible API. Enter the model name exactly as your server reports it (e.g. <code>llama3.1:8b</code>, <code>qwen3:8b</code>).
+              <br><strong>Ollama must be started with extension requests allowed</strong>, otherwise it rejects them:
+              <code>OLLAMA_ORIGINS="chrome-extension://*" ollama serve</code>
+              <br>In LM Studio, enable CORS in the local server settings. llama.cpp's server allows this by default.
+            </p>
+          </div>
+          <div class="local-model-controls">
+            <input type="text" id="localBaseUrl" class="api-key-input" placeholder="http://localhost:11434/v1" spellcheck="false">
+            <input type="text" id="localModel" class="api-key-input" placeholder="llama3.1:8b" spellcheck="false">
+            <button type="button" id="testLocalModelBtn" class="btn btn-secondary">Test connection</button>
+            <div id="localModelStatus" class="status"></div>
+          </div>
+        </div>
+
         <div class="setting-item">
           <div class="setting-info">
             <label class="setting-label" for="openaiModel">OpenAI Model</label>

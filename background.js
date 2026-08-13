@@ -1072,8 +1072,8 @@ async function syncPrTabGroup(windowId) {
   return { success: true, message: `PR group updated with ${prUrls.length} PR(s).` };
 }
 
-// Call OpenAI API to categorize tabs
-async function callOpenAI(apiKey, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
+/** Build the tab-categorization prompt shared by every AI provider. */
+function buildOrganizePrompt(tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
   const tabList = tabs.map((tab, index) => {
     const title = tab.title || 'Untitled';
     const url = tab.url || '';
@@ -1089,15 +1089,15 @@ ${tabList}`;
 
   // Add existing groups information if merging
   if (existingGroups && existingGroups.length > 0) {
-    const existingGroupsInfo = existingGroups.map((group, idx) => {
+    const existingGroupsInfo = existingGroups.map((group) => {
       const groupTabs = group.tabs.map(t => {
         const tabIndex = tabs.findIndex(tab => tab.id === t.id) + 1; // 1-based index
         return tabIndex > 0 ? tabIndex : null;
       }).filter(idx => idx !== null);
-      
+
       return `Existing Group "${group.title}": Contains tabs ${groupTabs.join(', ')}`;
     }).join('\n');
-    
+
     basePrompt += `\n\nExisting Groups (merge new tabs into these groups where appropriate):
 ${existingGroupsInfo}
 
@@ -1122,6 +1122,13 @@ ${customInstructions ? `Additional instructions: ${customInstructions}\n` : ''}
 
 Return ONLY valid JSON, no other text. Example format:
 [{"groupName": "Work", "tabIndices": [1, 3, 5]}, {"groupName": "Social", "tabIndices": [2, 4]}, {"groupName": "Misc", "tabIndices": [6, 7]}]`;
+
+  return basePrompt;
+}
+
+// Call OpenAI API to categorize tabs
+async function callOpenAI(apiKey, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
+  const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, splitTabIndices, minGroupSize);
 
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -1176,54 +1183,7 @@ Return ONLY valid JSON, no other text. Example format:
 
 // Call Claude API to categorize tabs
 async function callClaude(apiKey, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
-  const tabList = tabs.map((tab, index) => {
-    const title = tab.title || 'Untitled';
-    const url = tab.url || '';
-    return `${index + 1}. "${title}" - ${url}`;
-  }).join('\n');
-
-  let basePrompt = `You are a helpful assistant that organizes browser tabs into logical groups. Analyze the following tabs and group them into categories. Return ONLY a JSON array where each object has:
-- "groupName": a short descriptive name for the group (max 20 characters)
-- "tabIndices": an array of 1-based indices of tabs that belong to this group
-
-Tabs:
-${tabList}`;
-
-  // Add existing groups information if merging
-  if (existingGroups && existingGroups.length > 0) {
-    const existingGroupsInfo = existingGroups.map((group, idx) => {
-      const groupTabs = group.tabs.map(t => {
-        const tabIndex = tabs.findIndex(tab => tab.id === t.id) + 1; // 1-based index
-        return tabIndex > 0 ? tabIndex : null;
-      }).filter(idx => idx !== null);
-      
-      return `Existing Group "${group.title}": Contains tabs ${groupTabs.join(', ')}`;
-    }).join('\n');
-    
-    basePrompt += `\n\nExisting Groups (merge new tabs into these groups where appropriate):
-${existingGroupsInfo}
-
-IMPORTANT: When merging tabs into existing groups, use the EXACT group name from the existing group. You can also create new groups for tabs that don't fit into existing groups.`;
-  }
-
-  if (splitTabIndices && splitTabIndices.length > 0) {
-    basePrompt += `\n\nSIDE-BY-SIDE SPLITS (these tab pairs/groups MUST stay together in the SAME group - never separate them):
-${splitTabIndices.map((indices, i) => `- Split ${i + 1}: tabs ${indices.join(', ')}`).join('\n')}`;
-  }
-
-  const minSizeRuleClaude = minGroupSize > 0
-    ? `- Each group must contain MORE than ${minGroupSize} tab(s). Never create a group with ${minGroupSize} or fewer tabs; put those tabs in "Misc".\n`
-    : `- Never create a group with only one tab. All single tabs should be grouped into a group named "Misc".\n- Each group must contain at least 2 tabs (except for "Misc" which can contain multiple single tabs).\n`;
-  basePrompt += `\n\nIMPORTANT RULES:
-${minSizeRuleClaude}- If you have tabs that don't fit into any logical group, put them in "Misc".
-- NEVER add or remove any tabs to the group named "BOOKMARKS" or "PRs". Leave these groups exactly as they are.
-- Pinned tabs are never included in this list. Do not reference or create groups for pinned tabs.
-- Tabs in a side-by-side split must be placed in the SAME group together. Never separate them or unsplit them.
-
-${customInstructions ? `Additional instructions: ${customInstructions}\n` : ''}
-
-Return ONLY valid JSON, no other text. Example format:
-[{"groupName": "Work", "tabIndices": [1, 3, 5]}, {"groupName": "Social", "tabIndices": [2, 4]}, {"groupName": "Misc", "tabIndices": [6, 7]}]`;
+  const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, splitTabIndices, minGroupSize);
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -1278,51 +1238,7 @@ Return ONLY valid JSON, no other text. Example format:
 
 // Call Gemini API to categorize tabs
 async function callGemini(apiKey, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
-  const tabList = tabs.map((tab, index) => {
-    const title = tab.title || 'Untitled';
-    const url = tab.url || '';
-    return `${index + 1}. "${title}" - ${url}`;
-  }).join('\n');
-
-  let basePrompt = `You are a helpful assistant that organizes browser tabs into logical groups. Analyze the following tabs and group them into categories. Return ONLY a JSON array where each object has:
-- "groupName": a short descriptive name for the group (max 20 characters)
-- "tabIndices": an array of 1-based indices of tabs that belong to this group
-
-Tabs:
-${tabList}`;
-
-  if (existingGroups && existingGroups.length > 0) {
-    const existingGroupsInfo = existingGroups.map((group) => {
-      const groupTabs = group.tabs.map(t => {
-        const tabIndex = tabs.findIndex(tab => tab.id === t.id) + 1;
-        return tabIndex > 0 ? tabIndex : null;
-      }).filter(idx => idx !== null);
-      return `Existing Group "${group.title}": Contains tabs ${groupTabs.join(', ')}`;
-    }).join('\n');
-    basePrompt += `\n\nExisting Groups (merge new tabs into these groups where appropriate):
-${existingGroupsInfo}
-
-IMPORTANT: When merging tabs into existing groups, use the EXACT group name from the existing group. You can also create new groups for tabs that don't fit into existing groups.`;
-  }
-
-  if (splitTabIndices && splitTabIndices.length > 0) {
-    basePrompt += `\n\nSIDE-BY-SIDE SPLITS (these tab pairs/groups MUST stay together in the SAME group - never separate them):
-${splitTabIndices.map((indices, i) => `- Split ${i + 1}: tabs ${indices.join(', ')}`).join('\n')}`;
-  }
-
-  const minSizeRuleGemini = minGroupSize > 0
-    ? `- Each group must contain MORE than ${minGroupSize} tab(s). Never create a group with ${minGroupSize} or fewer tabs; put those tabs in "Misc".\n`
-    : `- Never create a group with only one tab. All single tabs should be grouped into a group named "Misc".\n- Each group must contain at least 2 tabs (except for "Misc" which can contain multiple single tabs).\n`;
-  basePrompt += `\n\nIMPORTANT RULES:
-${minSizeRuleGemini}- If you have tabs that don't fit into any logical group, put them in "Misc".
-- NEVER add or remove any tabs to the group named "BOOKMARKS" or "PRs". Leave these groups exactly as they are.
-- Pinned tabs are never included in this list. Do not reference or create groups for pinned tabs.
-- Tabs in a side-by-side split must be placed in the SAME group together. Never separate them or unsplit them.
-
-${customInstructions ? `Additional instructions: ${customInstructions}\n` : ''}
-
-Return ONLY valid JSON, no other text. Example format:
-[{"groupName": "Work", "tabIndices": [1, 3, 5]}, {"groupName": "Social", "tabIndices": [2, 4]}, {"groupName": "Misc", "tabIndices": [6, 7]}]`;
+  const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, splitTabIndices, minGroupSize);
 
   const modelId = model || 'gemini-2.0-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`;
@@ -1368,6 +1284,325 @@ Return ONLY valid JSON, no other text. Example format:
   return JSON.parse(jsonStr);
 }
 
+// ---------------------------------------------------------------------------
+// Local models: Ollama (and other OpenAI-compatible local servers)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434/v1';
+// Local models are slow (a 35B model takes ~50s for a dozen tabs), but this must stay
+// under the ~5 minute cap Chrome puts on a single service worker event.
+const OLLAMA_TIMEOUT_MS = 180000;
+
+/**
+ * Normalize a user-entered local server address into an OpenAI-compatible base URL.
+ * Accepts "localhost:11434", "http://localhost:11434", "http://localhost:11434/v1".
+ */
+function normalizeLocalBaseUrl(rawUrl) {
+  let url = (rawUrl || '').trim() || DEFAULT_OLLAMA_BASE_URL;
+  if (!/^https?:\/\//i.test(url)) {
+    url = `http://${url}`;
+  }
+  url = url.replace(/\/+$/, '');
+  // Strip a full endpoint path if the user pasted one, then ensure the /v1 prefix.
+  url = url.replace(/\/chat\/completions$/, '');
+  if (!/\/v\d+$/.test(url)) {
+    url = `${url}/v1`;
+  }
+  return url;
+}
+
+/** True if the address points at this machine, which is all the manifest grants access to. */
+function isLoopbackUrl(url) {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
+  } catch {
+    return false;
+  }
+}
+
+/** Turn a fetch failure against a local server into an actionable message. */
+function localServerError(error, baseUrl) {
+  if (error.name === 'AbortError') {
+    return new Error(`Local model timed out after ${Math.round(OLLAMA_TIMEOUT_MS / 1000)}s. Try a smaller model, or organize fewer tabs.`);
+  }
+  if (error instanceof TypeError) {
+    if (!isLoopbackUrl(baseUrl)) {
+      return new Error(
+        `Could not reach ${baseUrl}. This extension only has permission for localhost and 127.0.0.1, so a model server on ` +
+        `another host or network address will be blocked.`
+      );
+    }
+    return new Error(
+      `Could not reach the local model server at ${baseUrl}. Check that it is running, and that it allows requests from extensions ` +
+      `(for Ollama, start it with OLLAMA_ORIGINS="chrome-extension://*").`
+    );
+  }
+  return error;
+}
+
+/** List the models a local OpenAI-compatible server currently has available. */
+async function listLocalModels(rawBaseUrl) {
+  const baseUrl = normalizeLocalBaseUrl(rawBaseUrl);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(`${baseUrl}/models`, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`Local model server returned ${response.status} for ${baseUrl}/models`);
+    }
+    const data = await response.json();
+    const models = (data.data || data.models || [])
+      .map(m => m.id || m.name)
+      .filter(Boolean)
+      .sort();
+    return { baseUrl, models };
+  } catch (error) {
+    throw localServerError(error, baseUrl);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Call a local OpenAI-compatible server (Ollama, LM Studio, llama.cpp, vLLM) to categorize tabs.
+ * Local models are less reliable at emitting bare JSON, so one stricter retry is attempted.
+ */
+async function callLocalModel(rawBaseUrl, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
+  const baseUrl = normalizeLocalBaseUrl(rawBaseUrl);
+  const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, splitTabIndices, minGroupSize);
+  const retryReminder = '\n\nYour previous reply was not valid JSON. Reply with ONLY the JSON array: start with [ and end with ]. No explanation, no markdown code fences.';
+
+  let lastError = null;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const prompt = attempt === 0 ? basePrompt : basePrompt + retryReminder;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+
+    let content;
+    try {
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: model,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 5000,
+          temperature: 0.2,
+          stream: false
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: { message: 'Unknown error' } }));
+        console.error('[Smart Tab Organiser] Local model error:', response.status, error);
+        throw new Error(error.error?.message || error.message || `Local model server error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      content = data.choices?.[0]?.message?.content?.trim();
+    } catch (error) {
+      throw localServerError(error, baseUrl);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!content) {
+      lastError = new Error(`No response from local model "${model}"`);
+      continue;
+    }
+
+    // Extract JSON from response (in case there's extra text)
+    const jsonStr = extractJsonArray(content);
+    if (!jsonStr) {
+      console.warn('[Smart Tab Organiser] Local model: invalid format (no JSON array). Content preview:', content.slice(0, 200));
+      lastError = new Error(`Invalid response format from local model "${model}"`);
+      continue;
+    }
+
+    try {
+      return JSON.parse(jsonStr);
+    } catch (error) {
+      console.warn('[Smart Tab Organiser] Local model: JSON parse failed. Content preview:', content.slice(0, 200));
+      lastError = new Error(`Invalid JSON from local model "${model}"`);
+    }
+  }
+
+  throw lastError || new Error('Local model produced no usable response');
+}
+
+// ---------------------------------------------------------------------------
+// Chrome built-in AI (Gemini Nano, on-device via the Prompt API)
+// ---------------------------------------------------------------------------
+
+// Gemini Nano has a small context window, so tabs are organized in batches and merged.
+const CHROME_AI_TABS_PER_BATCH = 20;
+
+const CHROME_AI_GROUPS_SCHEMA = {
+  type: 'array',
+  items: {
+    type: 'object',
+    properties: {
+      groupName: { type: 'string' },
+      tabIndices: { type: 'array', items: { type: 'integer' } }
+    },
+    required: ['groupName', 'tabIndices'],
+    additionalProperties: false
+  }
+};
+
+/** Report whether the on-device model is usable, and whether it still needs downloading. */
+async function checkChromeAiAvailability() {
+  if (typeof LanguageModel === 'undefined') {
+    return {
+      available: false,
+      state: 'unsupported',
+      message: 'Chrome built-in AI is not available in this browser. It needs Chrome 138 or later on a supported desktop platform.'
+    };
+  }
+  let state;
+  try {
+    state = await LanguageModel.availability();
+  } catch (error) {
+    return { available: false, state: 'unsupported', message: `Chrome built-in AI is unavailable: ${error.message}` };
+  }
+  if (state === 'unavailable') {
+    return {
+      available: false,
+      state,
+      message: 'Chrome built-in AI is unsupported on this device. It requires ~22 GB free disk space and either 4 GB+ of VRAM or 16 GB+ of RAM.'
+    };
+  }
+  if (state === 'downloadable') {
+    return { available: true, state, message: 'Ready to use. Gemini Nano will download (a few GB) the first time you organize tabs.' };
+  }
+  if (state === 'downloading') {
+    return { available: true, state, message: 'Gemini Nano is downloading. Organizing tabs will work once the download finishes.' };
+  }
+  return { available: true, state, message: 'Gemini Nano is downloaded and ready to use on this device.' };
+}
+
+/** Verify the on-device model can be used, warning once if it still has to download. */
+async function ensureChromeAiReady() {
+  const status = await checkChromeAiAvailability();
+  if (!status.available) {
+    throw new Error(status.message);
+  }
+  if (status.state === 'downloadable' || status.state === 'downloading') {
+    chrome.notifications.create({
+      type: 'basic',
+      iconUrl: 'icons/icon128.png',
+      title: 'Downloading on-device model',
+      message: 'Chrome is downloading Gemini Nano (a few GB). Tab organisation will start once it is ready.'
+    });
+  }
+}
+
+/** Create an on-device session. Assumes ensureChromeAiReady() has already passed. */
+async function createChromeAiSession() {
+  try {
+    return await LanguageModel.create({
+      monitor(m) {
+        m.addEventListener('downloadprogress', (e) => {
+          console.log(`[Smart Tab Organiser] Gemini Nano download: ${Math.round((e.loaded || 0) * 100)}%`);
+        });
+      }
+    });
+  } catch (error) {
+    // Chrome can require a user gesture to start the initial model download, which a
+    // service worker doesn't have. The options page has a button that does have one.
+    if (error.name === 'NotAllowedError' || /user (gesture|activation)/i.test(error.message)) {
+      throw new Error('Chrome needs permission to download Gemini Nano first. Open this extension\'s options page and click "Download model".');
+    }
+    throw new Error(`Could not start Chrome built-in AI: ${error.message}`);
+  }
+}
+
+/** Merge per-batch group lists into one, combining groups that share a name. */
+function mergeGroupBatches(batches) {
+  const merged = new Map();
+  for (const groups of batches) {
+    for (const group of groups) {
+      const name = (group.groupName || '').trim();
+      if (!name) continue;
+      const key = name.toLowerCase();
+      const existing = merged.get(key);
+      const indices = (group.tabIndices || []).filter(idx => Number.isInteger(idx));
+      if (existing) {
+        existing.tabIndices.push(...indices);
+      } else {
+        merged.set(key, { groupName: name, tabIndices: [...indices] });
+      }
+    }
+  }
+  return Array.from(merged.values());
+}
+
+/**
+ * Categorize tabs with Chrome's on-device model. Nothing leaves the machine.
+ * Tabs are batched to fit the small context window; batch results are merged by group name.
+ */
+async function callChromeAI(tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
+  await ensureChromeAiReady();
+
+  const batches = [];
+  for (let start = 0; start < tabs.length; start += CHROME_AI_TABS_PER_BATCH) {
+    batches.push({ start, tabs: tabs.slice(start, start + CHROME_AI_TABS_PER_BATCH) });
+  }
+
+  const results = [];
+  for (const batch of batches) {
+    const batchEnd = batch.start + batch.tabs.length; // exclusive, 0-based
+    // Remap global 1-based split indices to this batch; splits spanning batches are
+    // reunited later by organizeTabs().
+    const batchSplits = (splitTabIndices || [])
+      .map(indices => indices
+        .filter(idx => idx > batch.start && idx <= batchEnd)
+        .map(idx => idx - batch.start))
+      .filter(indices => indices.length >= 2);
+
+    const prompt = buildOrganizePrompt(batch.tabs, customInstructions, existingGroups, batchSplits, minGroupSize);
+
+    const session = await createChromeAiSession();
+    let content;
+    try {
+      content = await session.prompt(prompt, { responseConstraint: CHROME_AI_GROUPS_SCHEMA });
+    } catch (error) {
+      throw new Error(`Chrome built-in AI failed: ${error.message}`);
+    } finally {
+      session.destroy();
+    }
+
+    const jsonStr = extractJsonArray((content || '').trim());
+    if (!jsonStr) {
+      console.warn('[Smart Tab Organiser] Chrome AI: invalid format (no JSON array). Content preview:', (content || '').slice(0, 200));
+      throw new Error('Invalid response format from Chrome built-in AI');
+    }
+
+    let groups;
+    try {
+      groups = JSON.parse(jsonStr);
+    } catch (error) {
+      throw new Error('Invalid JSON from Chrome built-in AI');
+    }
+    if (!Array.isArray(groups)) {
+      throw new Error('Invalid response from Chrome built-in AI: expected array of groups');
+    }
+
+    // Shift batch-local indices back to global 1-based tab indices.
+    results.push(groups.map(group => ({
+      groupName: group.groupName,
+      tabIndices: (group.tabIndices || [])
+        .filter(idx => Number.isInteger(idx) && idx >= 1 && idx <= batch.tabs.length)
+        .map(idx => idx + batch.start)
+    })));
+  }
+
+  return mergeGroupBatches(results);
+}
+
 // Organize tabs using AI
 const ALWAYS_PRESERVED_GROUP_NAMES = ['BOOKMARKS', 'PRs'];
 const PR_GROUP_TITLE = 'PRs';
@@ -1379,7 +1614,8 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     // Get AI settings
     const settings = await chrome.storage.local.get([
       'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider',
-      'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions'
+      'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
+      'localBaseUrl', 'localModel'
     ]);
     const provider = settings.aiProvider || 'openai';
     const openaiKey = settings.openaiKey?.trim();
@@ -1388,6 +1624,8 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     const openaiModel = settings.openaiModel || 'gpt-5-mini';
     const claudeModel = settings.claudeModel || 'claude-haiku-4-5-20251001';
     const geminiModel = settings.geminiModel || 'gemini-2.0-flash';
+    const localBaseUrl = settings.localBaseUrl?.trim() || DEFAULT_OLLAMA_BASE_URL;
+    const localModel = settings.localModel?.trim();
     
     // Use custom instructions from parameter, or fall back to saved options instructions
     const instructions = customInstructions || settings.customInstructionsOptions || '';
@@ -1401,6 +1639,10 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     }
     if (provider === 'gemini' && !geminiKey) {
       throw new Error('Gemini API key not configured. Please set it in the options page.');
+    }
+    // Local providers need no key: 'local' needs a model name, 'chrome-ai' needs nothing.
+    if (provider === 'local' && !localModel) {
+      throw new Error('No local model name configured. Please set it in the options page (e.g. "llama3.1:8b").');
     }
 
     // Get all tabs in current window
@@ -1524,6 +1766,10 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
       groups = await callOpenAI(openaiKey, openaiModel, tabsForAI, instructions, existingGroupsForAI, splitTabIndices, minTabs);
     } else if (provider === 'claude') {
       groups = await callClaude(claudeKey, claudeModel, tabsForAI, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+    } else if (provider === 'chrome-ai') {
+      groups = await callChromeAI(tabsForAI, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+    } else if (provider === 'local') {
+      groups = await callLocalModel(localBaseUrl, localModel, tabsForAI, instructions, existingGroupsForAI, splitTabIndices, minTabs);
     } else {
       groups = await callGemini(geminiKey, geminiModel, tabsForAI, instructions, existingGroupsForAI, splitTabIndices, minTabs);
     }
@@ -1832,6 +2078,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'syncPrTabGroup') {
     syncPrTabGroup(request.windowId)
       .then(result => sendResponse(result))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  // Checked from the options page so the result reflects the service worker,
+  // which is where tab organisation actually runs.
+  if (request.action === 'checkChromeAI') {
+    checkChromeAiAvailability()
+      .then(status => sendResponse({ success: true, ...status }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (request.action === 'listLocalModels') {
+    listLocalModels(request.baseUrl)
+      .then(result => sendResponse({ success: true, ...result }))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }

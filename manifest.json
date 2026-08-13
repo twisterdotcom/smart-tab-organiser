@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Smart Tab Organiser",
-  "version": "1.0.0",
-  "description": "Dedupe tabs, tidy pinned URL lists, GitHub PR groups, and AI tab organisation. Optional cloud APIs use your keys only.",
+  "version": "1.1.0",
+  "description": "Dedupe tabs, tidy pinned URL lists, GitHub PR groups, and AI tab organisation. Runs fully on-device, or with your own cloud API keys.",
   "permissions": [
     "tabs",
     "storage",
@@ -14,7 +14,9 @@
     "https://api.openai.com/*",
     "https://api.anthropic.com/*",
     "https://generativelanguage.googleapis.com/*",
-    "https://api.github.com/*"
+    "https://api.github.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "action": {
     "default_icon": {

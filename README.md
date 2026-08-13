@@ -9,17 +9,49 @@ A Chrome extension that **deduplicates tabs** (including smart rules for hashes/
 
 - **Local by default**: Settings and optional API tokens stay on your device (`chrome.storage.local`).
 - **No analytics**: No telemetry or tracking from this extension.
+- **Fully offline AI available**: Choosing Chrome built-in AI or a local model means tab titles and URLs never leave your computer.
 - **Optional cloud features**: AI organisation and the PR tab group send data only when you configure keys and use those features—see [Privacy Policy](PRIVACY_POLICY.md).
 - [Privacy Policy](PRIVACY_POLICY.md)
 
 ## Key features
 
-- **AI tab organisation**: Group tabs with OpenAI, Anthropic Claude, or Google Gemini (you supply API keys in Options).
+- **AI tab organisation**: Group tabs with a cloud provider (OpenAI, Anthropic Claude, Google Gemini — you supply API keys in Options) or **entirely on-device** with Chrome's built-in Gemini Nano or a local Ollama / LM Studio / llama.cpp model.
 - **Duplicate detection**: Same base URL with different anchors/hashes; optional ignore-query / ignore-hash rules; case-insensitive matching.
 - **Pinned URL list**: Pin, unpin, and order tabs to match a list you define (runs with the toolbar action or combined flows).
 - **GitHub PR tab group** (optional): Uses your GitHub token to open/update a group of PR tabs; integrates with dedupe logic when enabled.
 - **Toolbar, context menu, and shortcut**: Left-click the icon, use the right-click menus, or **⌘+Shift+O** (Mac) / **Ctrl+Shift+O** (Windows/Linux) for the organise command (see `manifest.json` → `commands`).
 - **Popup**: Close duplicates only, reload all tabs, AI organise, and related toggles.
+
+## On-device AI (no API key, no network)
+
+Two of the five AI providers run entirely on your own machine. Pick either one under **Options → Preferred AI Provider**.
+
+### Chrome built-in AI (Gemini Nano)
+
+Nothing to install — the model runs inside Chrome itself.
+
+- Requires **Chrome 138+** on desktop, ~**22 GB** free disk space, and either **4 GB+ VRAM** or **16 GB+ RAM**.
+- Chrome downloads the model (a few GB) on first use. Because the download can need a user gesture that a service worker doesn't have, use **Options → Check availability → Download model** to fetch it up front.
+- Gemini Nano is far smaller than cloud models, so grouping is coarser. Tabs are organised in **batches of 20** to fit its context window, and batches sharing a group name are merged.
+
+### Local model (Ollama, LM Studio, llama.cpp, vLLM)
+
+Any local server with an OpenAI-compatible `/v1/chat/completions` endpoint works.
+
+1. Install a runtime and pull a model, e.g. `ollama pull llama3.1:8b`.
+2. **Start the server so it accepts requests from extensions.** Ollama rejects unknown origins, so it must be launched with:
+
+   ```bash
+   OLLAMA_ORIGINS="chrome-extension://*" ollama serve
+   ```
+
+   In LM Studio, enable CORS in the local server settings. llama.cpp's server allows this by default.
+3. In Options, set the **server address** (default `http://localhost:11434/v1`) and the **model name** exactly as your server reports it (`llama3.1:8b`, `qwen3:8b`, …). **Test connection** lists the models it can see.
+
+Notes:
+
+- Local generation is slow — a 35B model takes roughly a minute for a dozen tabs. Requests time out after 3 minutes, which keeps them inside Chrome's service worker lifetime; if you hit that, use a smaller model or organise fewer tabs.
+- Small models are less reliable at emitting bare JSON, so a stricter retry is attempted automatically before failing.
 
 ## Example: GitHub issue tabs
 
@@ -48,7 +80,8 @@ The extension can treat these as one logical page, keep the tab with the **highe
 ### Requirements
 
 - **Google Chrome**, **Microsoft Edge**, or another **Chromium** browser with unpacked extensions.
-- For **AI organisation**: an API key from OpenAI, Anthropic, and/or Google (configured in **Extension options** after install).
+- For **cloud AI organisation**: an API key from OpenAI, Anthropic, and/or Google (configured in **Extension options** after install).
+- For **on-device AI organisation**: either Chrome 138+ on supported hardware (built-in Gemini Nano), or a local OpenAI-compatible server such as [Ollama](https://ollama.com) — no API key needed. See [On-device AI](#on-device-ai-no-api-key-no-network).
 - For the **GitHub PR group**: a GitHub personal access token with appropriate repo scope (configured in Options).
 
 ### Steps
@@ -75,7 +108,7 @@ The extension can treat these as one logical page, keep the tab with the **highe
 
 1. Right-click the extension icon → **Options** (or open Options from the extensions list).
 2. Set **dedupe / pin** preferences and any **pinned URL list** or **PR group** options you want.
-3. Under AI settings, paste **API keys** only if you plan to use AI organisation.
+3. Under AI settings, choose a **provider**. Paste **API keys** only if you picked a cloud provider; the on-device options need no key.
 4. Reload the extension after code changes: on `chrome://extensions` / `edge://extensions`, click **Reload** on the extension card.
 
 ## How to use
@@ -119,6 +152,7 @@ Right-click the page or the extension icon (depending on browser) and use entrie
 | `notifications` | User feedback for long-running or batch actions (where implemented). |
 | `contextMenus` | Right-click commands for dedupe / organise flows. |
 | Host access for OpenAI, Anthropic, Gemini, GitHub | Only used when you configure keys and invoke those features. |
+| Host access for `localhost` / `127.0.0.1` | Reach a local model server (Ollama, LM Studio, llama.cpp) on your own machine. Never used unless you select the local provider. |
 
 Details: [PRIVACY_POLICY.md](PRIVACY_POLICY.md).
 

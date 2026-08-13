@@ -19,6 +19,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   const openaiModelSelect = document.getElementById('openaiModel');
   const claudeModelSelect = document.getElementById('claudeModel');
   const geminiModelSelect = document.getElementById('geminiModel');
+  const localBaseUrlInput = document.getElementById('localBaseUrl');
+  const localModelInput = document.getElementById('localModel');
+  const testLocalModelBtn = document.getElementById('testLocalModelBtn');
+  const localModelStatus = document.getElementById('localModelStatus');
+  const checkChromeAiBtn = document.getElementById('checkChromeAiBtn');
+  const downloadChromeAiBtn = document.getElementById('downloadChromeAiBtn');
+  const chromeAiStatus = document.getElementById('chromeAiStatus');
   const customInstructionsOptions = document.getElementById('customInstructionsOptions');
   const preserveGroupsCheckbox = document.getElementById('preserveGroups');
   const preserveGroupsMinTabsInput = document.getElementById('preserveGroupsMinTabs');
@@ -58,7 +65,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider',
     'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
     'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting', 'organizeOnClick', 'pinnedUrls',
-    'githubToken', 'prGroupEnabled', 'bookmarksGroupColor'
+    'githubToken', 'prGroupEnabled', 'bookmarksGroupColor', 'localBaseUrl', 'localModel'
   ]);
   ignoreQueryCheckbox.checked = settings.ignoreQuery !== false; // default to true
   ignoreHashCheckbox.checked = settings.ignoreHash !== false; // default to true
@@ -78,6 +85,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   openaiModelSelect.value = settings.openaiModel || 'gpt-5-mini';
   claudeModelSelect.value = settings.claudeModel || 'claude-haiku-4-5-20251001';
   geminiModelSelect.value = settings.geminiModel || 'gemini-2.0-flash';
+  localBaseUrlInput.value = settings.localBaseUrl || '';
+  localModelInput.value = settings.localModel || '';
   if (settings.customInstructionsOptions) {
     customInstructionsOptions.value = settings.customInstructionsOptions;
   }
@@ -129,6 +138,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   
   aiProviderSelect.addEventListener('change', () => {
     chrome.storage.local.set({ aiProvider: aiProviderSelect.value });
+    if (aiProviderSelect.value === 'chrome-ai') {
+      checkChromeAi();
+    }
   });
   
   openaiModelSelect.addEventListener('change', () => {
@@ -142,7 +154,111 @@ document.addEventListener('DOMContentLoaded', async () => {
   geminiModelSelect.addEventListener('change', () => {
     chrome.storage.local.set({ geminiModel: geminiModelSelect.value });
   });
-  
+
+  localBaseUrlInput.addEventListener('input', () => {
+    chrome.storage.local.set({ localBaseUrl: localBaseUrlInput.value.trim() });
+  });
+
+  localModelInput.addEventListener('input', () => {
+    chrome.storage.local.set({ localModel: localModelInput.value.trim() });
+  });
+
+  // Ask the service worker to check the local server, so the result reflects
+  // the context that actually organizes tabs.
+  testLocalModelBtn.addEventListener('click', async () => {
+    testLocalModelBtn.disabled = true;
+    localModelStatus.textContent = 'Connecting to local model server...';
+    localModelStatus.className = 'status info';
+    try {
+      const result = await chrome.runtime.sendMessage({
+        action: 'listLocalModels',
+        baseUrl: localBaseUrlInput.value.trim()
+      });
+      if (!result.success) {
+        localModelStatus.textContent = result.error || 'Could not reach the local model server';
+        localModelStatus.className = 'status error';
+        return;
+      }
+      if (result.models.length === 0) {
+        localModelStatus.textContent = `Connected to ${result.baseUrl}, but no models are installed. Pull one first (e.g. "ollama pull llama3.1:8b").`;
+        localModelStatus.className = 'status error';
+        return;
+      }
+      const chosen = localModelInput.value.trim();
+      const known = result.models.includes(chosen);
+      localModelStatus.textContent = `Connected to ${result.baseUrl}. Available: ${result.models.join(', ')}.` +
+        (chosen && !known ? ` Warning: "${chosen}" is not in that list.` : '');
+      localModelStatus.className = chosen && !known ? 'status info' : 'status success';
+    } catch (error) {
+      localModelStatus.textContent = 'Error: ' + error.message;
+      localModelStatus.className = 'status error';
+    } finally {
+      testLocalModelBtn.disabled = false;
+    }
+  });
+
+  async function checkChromeAi() {
+    checkChromeAiBtn.disabled = true;
+    chromeAiStatus.textContent = 'Checking on-device model...';
+    chromeAiStatus.className = 'status info';
+    try {
+      const result = await chrome.runtime.sendMessage({ action: 'checkChromeAI' });
+      if (!result.success) {
+        chromeAiStatus.textContent = result.error || 'Could not check Chrome built-in AI';
+        chromeAiStatus.className = 'status error';
+        return;
+      }
+      chromeAiStatus.textContent = result.message;
+      chromeAiStatus.className = result.available
+        ? (result.state === 'available' ? 'status success' : 'status info')
+        : 'status error';
+      downloadChromeAiBtn.hidden = !(result.available && result.state !== 'available');
+    } catch (error) {
+      chromeAiStatus.textContent = 'Error: ' + error.message;
+      chromeAiStatus.className = 'status error';
+    } finally {
+      checkChromeAiBtn.disabled = false;
+    }
+  }
+
+  checkChromeAiBtn.addEventListener('click', checkChromeAi);
+
+  // Chrome can require a user gesture to start the first model download, which the
+  // service worker never has — so start it here, from a real click.
+  downloadChromeAiBtn.addEventListener('click', async () => {
+    if (typeof LanguageModel === 'undefined') {
+      chromeAiStatus.textContent = 'Chrome built-in AI is not available in this browser.';
+      chromeAiStatus.className = 'status error';
+      return;
+    }
+    downloadChromeAiBtn.disabled = true;
+    chromeAiStatus.textContent = 'Starting download... this can take several minutes. Keep this page open.';
+    chromeAiStatus.className = 'status info';
+    try {
+      const session = await LanguageModel.create({
+        monitor(m) {
+          m.addEventListener('downloadprogress', (e) => {
+            chromeAiStatus.textContent = `Downloading Gemini Nano: ${Math.round((e.loaded || 0) * 100)}%`;
+          });
+        }
+      });
+      session.destroy();
+      chromeAiStatus.textContent = 'Gemini Nano is downloaded and ready to use on this device.';
+      chromeAiStatus.className = 'status success';
+      downloadChromeAiBtn.hidden = true;
+    } catch (error) {
+      chromeAiStatus.textContent = 'Download failed: ' + error.message;
+      chromeAiStatus.className = 'status error';
+    } finally {
+      downloadChromeAiBtn.disabled = false;
+    }
+  });
+
+  // Surface availability up front for anyone already using the on-device model.
+  if (aiProviderSelect.value === 'chrome-ai') {
+    checkChromeAi();
+  }
+
   customInstructionsOptions.addEventListener('input', () => {
     chrome.storage.local.set({ customInstructionsOptions: customInstructionsOptions.value.trim() });
   });

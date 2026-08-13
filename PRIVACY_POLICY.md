@@ -1,6 +1,6 @@
 # Privacy Policy for Smart Tab Organiser
 
-**Last Updated:** April 20, 2026
+**Last Updated:** August 12, 2026
 
 ## Overview
 
@@ -22,6 +22,7 @@ This extension stores preferences and optional secrets (API keys, GitHub tokens)
 
 ### Tab data and network requests
 - Tab **URLs and titles** may be sent **only when you use optional features** that require cloud APIs (see **Third-party services** below). Otherwise, tab data is processed in the browser and is not transmitted to us or to those APIs.
+- **On-device AI providers send nothing over the network.** If you select **Chrome built-in AI** or a **local model**, tab titles and URLs are processed on your own computer only — by Chrome's bundled Gemini Nano model, or by a server you run yourself (see **On-device AI** below).
 
 ## Permissions Explained
 
@@ -53,7 +54,7 @@ This extension stores preferences and optional secrets (API keys, GitHub tokens)
 
 ### AI Tab Organization (Optional)
 
-If you choose to use the AI tab organization feature, the extension will send tab titles and URLs to either:
+If you choose a **cloud** AI provider for tab organization, the extension will send tab titles and URLs to either:
 - **OpenAI** (api.openai.com) - when using OpenAI models
 - **Anthropic** (api.anthropic.com) - when using Claude models
 - **Google** (generativelanguage.googleapis.com) - when using Gemini models
@@ -64,7 +65,16 @@ If you choose to use the AI tab organization feature, the extension will send ta
 
 **Your API Key**: Your API key is stored locally on your device and is never shared with us or any other third party. You are responsible for managing your API key and any associated costs.
 
-**Opting Out**: You can disable AI features entirely by not configuring API keys. Core deduplication and pinned-tab tidy do not call OpenAI, Anthropic, or Google.
+**Opting Out**: You can disable AI features entirely by not configuring API keys, or avoid third parties altogether by selecting an on-device provider. Core deduplication and pinned-tab tidy do not call OpenAI, Anthropic, or Google.
+
+### On-device AI (optional, no third party)
+
+Two AI providers involve **no third-party service and no network transmission of tab data**:
+
+- **Chrome built-in AI (Gemini Nano)**: Categorization runs inside Chrome using a model Chrome downloads and stores on your device. Tab titles and URLs are passed to that local model only. The model download itself is performed by Chrome from Google's servers and is not initiated or observed by the extension author; it contains no tab data.
+- **Local model (Ollama, LM Studio, llama.cpp, and similar)**: Tab titles and URLs are sent to a server **you** run, at an address you specify (by default `http://localhost:11434/v1` on your own machine). The extension requests host access to `localhost` and `127.0.0.1` for this purpose and makes no such request unless you select this provider. Where that data goes is entirely determined by the server you point it at; if you configure a non-local address, the data will go there.
+
+No API key is required for either option, and neither sends anything to the extension author.
 
 ### GitHub API (optional)
 
@@ -75,7 +85,7 @@ You can opt out by removing the token and disabling PR-related options.
 ## Data Security
 
 - Preferences and keys remain in **local extension storage** on your device unless you export them yourself.
-- **Network requests** are made **only** for optional features: AI providers when you use AI organisation, and GitHub when you use GitHub-related features with a token configured. Dedupe-only usage does not require those calls.
+- **Network requests** are made **only** for optional features: cloud AI providers when you use AI organisation with one selected, and GitHub when you use GitHub-related features with a token configured. Dedupe-only usage, and AI organisation with an on-device provider, do not require those calls.
 - The extension author does not receive your tab data, keys, or tokens.
 
 ## Changes to This Policy
