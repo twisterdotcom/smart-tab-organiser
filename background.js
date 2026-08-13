@@ -1,11 +1,11 @@
 // Background service worker for Smart Tab Organiser extension
+importScripts('ai-models.js');
 
 console.log('Smart Tab Organiser extension background service worker loaded');
 
-/** Extract the first complete JSON array from text (handles trailing explanation text from the model). */
-function extractJsonArray(text) {
-  const start = text.indexOf('[');
-  if (start === -1) return null;
+/** Extract a complete bracketed slice starting at `start` (handles strings/escapes). */
+function extractBracketedSlice(text, start) {
+  if (start < 0 || start >= text.length || text[start] !== '[') return null;
   let depth = 0;
   let inString = false;
   let escape = false;
@@ -34,6 +34,267 @@ function extractJsonArray(text) {
   }
   return null;
 }
+
+function normalizeTabIndices(indices) {
+  if (!Array.isArray(indices)) return [];
+  return indices
+    .map((idx) => (typeof idx === 'string' ? parseInt(idx, 10) : idx))
+    .filter((idx) => Number.isInteger(idx) && idx > 0);
+}
+
+function isValidGroupsArray(value) {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  return value.every(
+    (g) =>
+      g &&
+      typeof g === 'object' &&
+      typeof g.groupName === 'string' &&
+      Array.isArray(g.tabIndices) &&
+      normalizeTabIndices(g.tabIndices).length > 0
+  );
+}
+
+/** Parse AI tab-grouping response; ignores non-JSON bracketed text like [domain.com]. */
+function parseAiGroupsResponse(content) {
+  const candidates = [];
+
+  const fenceMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch) candidates.push(fenceMatch[1].trim());
+
+  const trimmed = content.trim();
+  if (trimmed.startsWith('[')) candidates.push(trimmed);
+
+  let pos = 0;
+  while ((pos = content.indexOf('[', pos)) !== -1) {
+    const slice = extractBracketedSlice(content, pos);
+    if (slice) {
+      candidates.push(slice);
+      pos += slice.length;
+    } else {
+      pos++;
+    }
+  }
+
+  const seen = new Set();
+  const unique = candidates.filter((c) => {
+    if (seen.has(c)) return false;
+    seen.add(c);
+    return true;
+  });
+
+  unique.sort((a, b) => {
+    const aScore = a.startsWith('[{') ? 0 : 1;
+    const bScore = b.startsWith('[{') ? 0 : 1;
+    return aScore - bScore || b.length - a.length;
+  });
+
+  for (const jsonStr of unique) {
+    try {
+      let parsed = JSON.parse(jsonStr);
+      if (!Array.isArray(parsed) && parsed && typeof parsed === 'object' && parsed.groupName) {
+        parsed = [parsed];
+      }
+      if (!isValidGroupsArray(parsed)) continue;
+      return parsed.map((g) => ({
+        groupName: g.groupName,
+        tabIndices: normalizeTabIndices(g.tabIndices),
+      }));
+    } catch (_) {
+      // try next candidate
+    }
+  }
+  return null;
+}
+
+// ---- AI provider error handling --------------------------------------------------------------
+const PROVIDER_LABELS = {
+  openai: 'OpenAI',
+  claude: 'Claude',
+  gemini: 'Gemini',
+  'chrome-ai': 'Chrome built-in AI',
+  local: 'Local model'
+};
+// Cloud providers, in the order they are tried as fallbacks for one another.
+const ALL_PROVIDERS = ['openai', 'claude', 'gemini'];
+// Providers that never send tab data off the machine.
+const ON_DEVICE_PROVIDERS = ['chrome-ai', 'local'];
+
+function isOnDeviceProvider(provider) {
+  return ON_DEVICE_PROVIDERS.includes(provider);
+}
+
+function providerLabel(provider) {
+  return PROVIDER_LABELS[provider] || provider;
+}
+
+class AiProviderError extends Error {
+  constructor({ provider, status, message, rawBody, cause }) {
+    super(message || 'AI provider error');
+    this.name = 'AiProviderError';
+    this.provider = provider;
+    this.status = status || null;
+    this.rawBody = rawBody;
+    if (cause) this.cause = cause;
+  }
+}
+
+/** Try multiple known paths to pull a useful error message out of an API JSON body. */
+function extractProviderErrorMessage(body) {
+  if (!body) return '';
+  if (typeof body === 'string') return body;
+  if (typeof body.message === 'string') return body.message;
+  if (body.error) {
+    if (typeof body.error === 'string') return body.error;
+    if (typeof body.error.message === 'string') return body.error.message;
+    if (Array.isArray(body.error) && body.error[0]?.message) return body.error[0].message;
+  }
+  if (Array.isArray(body.errors) && body.errors[0]?.message) return body.errors[0].message;
+  try {
+    return JSON.stringify(body);
+  } catch (_) {
+    return String(body);
+  }
+}
+
+/** Translate any thrown error from a provider call into a user-friendly classification. */
+function classifyAiError(err) {
+  const provider = err?.provider;
+  const status = err?.status || null;
+  const baseMsg = err?.message || String(err) || '';
+  const lower = baseMsg.toLowerCase();
+  const label = provider ? providerLabel(provider) : 'AI provider';
+
+  if (lower.includes('cors')) {
+    return {
+      type: 'cors',
+      provider,
+      summary: `${label} blocked browser access (CORS).`,
+      detail: baseMsg,
+      hint: `Your ${label} organization has disabled direct browser access. Use a different key or switch provider.`,
+    };
+  }
+  if (status === 401 || /invalid api key|authentication|unauthorized/.test(lower)) {
+    return {
+      type: 'auth',
+      provider,
+      summary: `${label} rejected the API key (HTTP 401).`,
+      detail: baseMsg,
+      hint: `Update the ${label} API key in Smart Tab Organiser settings.`,
+    };
+  }
+  if (status === 403 || /forbidden|permission denied|not allowed/.test(lower)) {
+    return {
+      type: 'forbidden',
+      provider,
+      summary: `${label} denied the request (HTTP 403).`,
+      detail: baseMsg,
+      hint: `Your ${label} key may not have access to the selected model.`,
+    };
+  }
+  if (status === 429 || /rate limit|quota|too many requests/.test(lower)) {
+    return {
+      type: 'rateLimit',
+      provider,
+      summary: `${label} rate limit hit (HTTP 429).`,
+      detail: baseMsg,
+      hint: `Wait a moment, switch ${label} model, or enable fallback providers.`,
+    };
+  }
+  if (status === 404 || /model.*not found|no such model/.test(lower)) {
+    return {
+      type: 'modelMissing',
+      provider,
+      summary: `${label} model not available.`,
+      detail: baseMsg,
+      hint: `Pick a different ${label} model in settings.`,
+    };
+  }
+  if (status && status >= 500) {
+    return {
+      type: 'server',
+      provider,
+      summary: `${label} server error (HTTP ${status}).`,
+      detail: baseMsg,
+      hint: `${label} is having issues. Try again or enable fallback providers.`,
+    };
+  }
+  if (/failed to fetch|network|networkerror/.test(lower)) {
+    return {
+      type: 'network',
+      provider,
+      summary: `${label} network error.`,
+      detail: baseMsg,
+      hint: 'Check your internet connection or try a different provider.',
+    };
+  }
+  if (/used all .* tokens on hidden reasoning|reasoning model .* produced no output/.test(lower)) {
+    return {
+      type: 'reasoningExhausted',
+      provider,
+      summary: `${label} reasoning model spent all tokens on hidden reasoning.`,
+      detail: baseMsg,
+      hint: `Switch to a non-reasoning ${label} model (e.g. GPT-4.1 / gpt-4o) in settings.`,
+    };
+  }
+  if (/finish_reason=length|response was cut off/.test(lower)) {
+    return {
+      type: 'truncated',
+      provider,
+      summary: `${label} response was cut off (output too long).`,
+      detail: baseMsg,
+      hint: `Reduce the number of tabs, or switch to a model with a larger output budget.`,
+    };
+  }
+  if (/no response from|invalid response format|returned no content|isn't a json array|isn’t a json array/.test(lower)) {
+    return {
+      type: 'badResponse',
+      provider,
+      summary: `${label} returned an unexpected response.`,
+      detail: baseMsg,
+      hint: `Try again, switch ${label} model, or use a different provider.`,
+    };
+  }
+  if (/api key not configured/.test(lower)) {
+    return {
+      type: 'missingKey',
+      provider,
+      summary: `${label} API key not configured.`,
+      detail: baseMsg,
+      hint: `Add a ${label} API key in Smart Tab Organiser settings.`,
+    };
+  }
+  return {
+    type: 'unknown',
+    provider,
+    summary: status ? `${label} error (HTTP ${status}).` : `${label} error.`,
+    detail: baseMsg,
+    hint: '',
+  };
+}
+
+/** Single-line short summary suitable for the cramped Chrome notification body. */
+function shortFailureLabel(classification) {
+  // Strip leading "<Provider> " from the summary so we can prefix with provider label ourselves
+  const label = classification.provider ? providerLabel(classification.provider) : '';
+  const summary = classification.summary || '';
+  const stripped = label && summary.startsWith(label + ' ') ? summary.slice(label.length + 1) : summary;
+  // Drop trailing period for tighter list rendering
+  return stripped.replace(/\.$/, '');
+}
+
+/** Compose a single message describing all provider failures (for notifications / popup). */
+function buildMultiProviderErrorMessage(failures) {
+  if (!failures || failures.length === 0) return 'AI organization failed.';
+  if (failures.length === 1) {
+    const c = failures[0].classification;
+    return c.hint ? `${c.summary} ${c.hint}` : c.summary;
+  }
+  const lines = failures.map((f) => `• ${providerLabel(f.provider)}: ${shortFailureLabel(f.classification)}`);
+  // For multi-failure notifications, keep it tight: list providers + one shared next step.
+  return `${lines.join('\n')}\nOpen extension options for details and fixes.`;
+}
+
+// ---- end AI provider error handling ----------------------------------------------------------
 
 // Initialize default settings on install
 chrome.runtime.onInstalled.addListener((details) => {
@@ -143,11 +404,34 @@ async function runOrganizeWithFeedback() {
   try {
     const result = await organizeTabs(preserveGroups, mergeIntoExisting, customInstructions, preserveGroupsMinTabs);
     chrome.notifications.clear('organize-progress');
+    if (!result.success) {
+      const failures = result.failures || [];
+      const title = failures.length > 1
+        ? `AI organization failed (tried ${failures.length} providers)`
+        : failures.length === 1
+          ? `AI organization failed — ${failures[0].providerLabel}`
+          : 'AI organization failed';
+      chrome.notifications.create({
+        type: 'basic',
+        iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+        title,
+        message: result.error || 'An error occurred'
+      });
+      return;
+    }
+    const fb = result.fallbackInfo;
+    const titleSuccess = fb
+      ? `Tabs organized (used ${providerLabel(fb.providerUsed)} fallback)`
+      : 'Tabs organized';
+    let message = `Organized ${result.groupedCount} tab(s) into ${result.groupCount} group(s).`;
+    if (fb) {
+      message += `\n${fb.primaryFailedLabel} failed: ${fb.primaryFailedSummary}`;
+    }
     chrome.notifications.create({
       type: 'basic',
       iconUrl: chrome.runtime.getURL('icons/icon128.png'),
-      title: 'Tabs organized',
-      message: `Organized ${result.groupedCount} tab(s) into ${result.groupCount} group(s).`
+      title: titleSuccess,
+      message
     });
   } catch (err) {
     chrome.notifications.clear('organize-progress');
@@ -268,7 +552,8 @@ async function countDuplicates() {
     const ignoreHash = settings.ignoreHash !== false; // default to true
     
     // Get all tabs in the current window with URLs loaded (handles suspended tabs)
-    const tabs = await getAllTabsWithUrls();
+    let tabs = await getAllTabsWithUrls();
+    tabs = await refreshTabsForDedupe(tabs);
     
     if (tabs.length <= 1) {
       return 0;
@@ -372,27 +657,62 @@ function isValidUrl(url) {
   }
 }
 
+function isStaleTabError(e) {
+  const msg = e?.message || String(e);
+  return msg.includes('No tab with id');
+}
+
 // Ensure tab has a URL loaded (handles suspended/inactive tabs in Arc)
 async function ensureTabUrl(tab) {
   // If tab already has a valid URL, return it
   if (tab.url && isValidUrl(tab.url)) {
     return tab.url;
   }
-  
-  // Try to get the tab's full information, which may force-load it
-  // This helps with browsers like Arc that suspend inactive tabs
+
+  // Tab may have been closed between query and get (common during badge updates)
   try {
     const fullTab = await chrome.tabs.get(tab.id);
     if (fullTab.url && isValidUrl(fullTab.url)) {
       return fullTab.url;
     }
   } catch (e) {
-    // Tab might have been closed or we don't have permission
+    if (isStaleTabError(e)) {
+      return null;
+    }
     console.warn(`Could not load URL for tab ${tab.id}:`, e);
   }
-  
-  // Return the original URL (might be empty/invalid, but that's handled elsewhere)
+
   return tab.url || '';
+}
+
+// HTTP(S) tabs suitable for AI organization (after URLs are resolved)
+function isOrganizableHttpTab(tab) {
+  const url = tab.url || '';
+  return !url.startsWith('chrome://') &&
+    !url.startsWith('chrome-extension://') &&
+    !url.startsWith('edge://') &&
+    !url.startsWith('about:') &&
+    url.startsWith('http');
+}
+
+async function getOrganizableTabsInCurrentWindow() {
+  const tabs = await getAllTabsWithUrls();
+  return tabs.filter(isOrganizableHttpTab);
+}
+
+/** Drop tab ids that were closed during a long async operation. */
+async function filterExistingTabIds(tabIds) {
+  const existing = await Promise.all(
+    tabIds.map(async (id) => {
+      try {
+        await chrome.tabs.get(id);
+        return id;
+      } catch (e) {
+        return isStaleTabError(e) ? null : Promise.reject(e);
+      }
+    })
+  );
+  return existing.filter((id) => id !== null);
 }
 
 // Get all tabs with their URLs loaded (handles suspended tabs)
@@ -404,11 +724,12 @@ async function getAllTabsWithUrls() {
   const tabsWithUrls = await Promise.all(
     tabs.map(async (tab) => {
       const url = await ensureTabUrl(tab);
+      if (url === null) return null;
       return { ...tab, url };
     })
   );
-  
-  return tabsWithUrls;
+
+  return tabsWithUrls.filter(Boolean);
 }
 
 // Normalize URL for comparison
@@ -484,55 +805,73 @@ function extractAnchorNumber(url) {
   }
 }
 
-// Compare tabs to determine which to keep
+// Chrome 140+ Split View: closing or moving a split tab unsplits the pair.
+const SPLIT_VIEW_NONE = typeof chrome.tabs?.SPLIT_VIEW_ID_NONE === 'number'
+  ? chrome.tabs.SPLIT_VIEW_ID_NONE
+  : -1;
+
 function isInSplitView(tab) {
-  const id = tab.splitViewId;
-  return id !== undefined && id !== null && id !== -1;
+  const id = tab?.splitViewId;
+  return typeof id === 'number' && id !== SPLIT_VIEW_NONE;
 }
 
-function compareTabs(tab1, tab2, ignoreHash) {
-  // Never close a tab that's in a split view in favor of a duplicate that isn't
-  const t1Split = isInSplitView(tab1);
-  const t2Split = isInSplitView(tab2);
-  if (t1Split && !t2Split) return -1; // keep tab1
-  if (!t1Split && t2Split) return 1;  // keep tab2
-
-  const num1 = extractAnchorNumber(tab1.url);
-  const num2 = extractAnchorNumber(tab2.url);
-  
-  // If ignoring hash, we still want to keep the one with the highest anchor number
-  // But if both have no anchor or same number, keep the most recently accessed
-  if (num1 > num2) {
-    return -1; // tab1 should be kept
-  } else if (num2 > num1) {
-    return 1; // tab2 should be kept
-  } else {
-    // Same anchor number (or both 0), keep the most recently accessed
-    return tab2.lastAccessed - tab1.lastAccessed;
-  }
-}
-
-// Same as compareTabs but prefers the tab in the PR group (when prGroupId is set). Split view still wins.
-function compareTabsWithPrGroup(tab1, tab2, ignoreHash, prGroupId) {
+/** Prefer keeping split-view tabs over non-split duplicates (overrides recency). */
+function compareSplitViewPreference(tab1, tab2) {
   const t1Split = isInSplitView(tab1);
   const t2Split = isInSplitView(tab2);
   if (t1Split && !t2Split) return -1;
   if (!t1Split && t2Split) return 1;
+  return 0;
+}
+
+function compareTabsByRecency(tab1, tab2, ignoreHash) {
+  const num1 = extractAnchorNumber(tab1.url);
+  const num2 = extractAnchorNumber(tab2.url);
+
+  if (num1 > num2) return -1;
+  if (num2 > num1) return 1;
+  return tab2.lastAccessed - tab1.lastAccessed;
+}
+
+// Split view > PR group > highest anchor / most recent
+function compareTabsWithPrGroup(tab1, tab2, ignoreHash, prGroupId) {
+  const splitPref = compareSplitViewPreference(tab1, tab2);
+  if (splitPref !== 0) return splitPref;
   if (prGroupId != null) {
     const t1InPr = tab1.groupId === prGroupId;
     const t2InPr = tab2.groupId === prGroupId;
     if (t1InPr && !t2InPr) return -1;
     if (!t1InPr && t2InPr) return 1;
   }
-  return compareTabs(tab1, tab2, ignoreHash);
+  return compareTabsByRecency(tab1, tab2, ignoreHash);
+}
+
+async function refreshTabsForDedupe(tabs) {
+  return Promise.all(
+    tabs.map(async (tab) => {
+      try {
+        const fresh = await chrome.tabs.get(tab.id);
+        return {
+          ...tab,
+          url: tab.url,
+          splitViewId: fresh.splitViewId,
+          lastAccessed: fresh.lastAccessed,
+          groupId: fresh.groupId,
+        };
+      } catch {
+        return tab;
+      }
+    })
+  );
 }
 
 // Close duplicate tabs
 async function closeDuplicates(ignoreQuery, ignoreHash, reloadTabs) {
   try {
     // Get all tabs in the current window with URLs loaded (handles suspended tabs)
-    const tabs = await getAllTabsWithUrls();
-    
+    let tabs = await getAllTabsWithUrls();
+    tabs = await refreshTabsForDedupe(tabs);
+
     if (tabs.length <= 1) {
       return {
         success: true,
@@ -605,13 +944,15 @@ async function closeDuplicates(ignoreQuery, ignoreHash, reloadTabs) {
       closedCount = tabsToClose.length;
     }
     
-    // Reload remaining tabs if requested
+    // Reload remaining tabs if requested (skip split-view tabs — reload can unsplit)
     if (reloadTabs && tabsToKeep.length > 0) {
-      const reloadPromises = tabsToKeep.map(tab => 
-        chrome.tabs.reload(tab.id).catch(err => {
-          console.error(`Failed to reload tab ${tab.id}:`, err);
-        })
-      );
+      const reloadPromises = tabsToKeep
+        .filter((tab) => !isInSplitView(tab))
+        .map((tab) =>
+          chrome.tabs.reload(tab.id).catch((err) => {
+            console.error(`Failed to reload tab ${tab.id}:`, err);
+          })
+        );
       await Promise.all(reloadPromises);
     }
     
@@ -715,9 +1056,13 @@ async function ensurePinnedTabsExist(windowId, ignoreQuery, ignoreHash) {
   }
 
   const allTabs = await chrome.tabs.query({ windowId });
-  const tabsWithUrls = await Promise.all(
-    allTabs.map(async (tab) => ({ ...tab, url: await ensureTabUrl(tab) }))
-  );
+  const tabsWithUrls = (await Promise.all(
+    allTabs.map(async (tab) => {
+      const url = await ensureTabUrl(tab);
+      if (url === null) return null;
+      return { ...tab, url };
+    })
+  )).filter(Boolean);
 
   const usedTabIds = new Set();
   const tabIdsInOrder = [];
@@ -727,7 +1072,7 @@ async function ensurePinnedTabsExist(windowId, ignoreQuery, ignoreHash) {
     const isPrefix = entry.type === 'prefix';
 
     const existingTab = tabsWithUrls.find(t => {
-      if (!t.url || !isValidUrl(t.url) || usedTabIds.has(t.id)) return false;
+      if (!t.url || !isValidUrl(t.url) || usedTabIds.has(t.id) || isInSplitView(t)) return false;
       const tNorm = normalizeUrl(t.url, ignoreQuery, ignoreHash);
       if (tNorm.startsWith('__invalid__') || tNorm.startsWith('__error__')) return false;
       if (isPrefix) return tNorm.startsWith(norm);
@@ -816,10 +1161,14 @@ async function dedupeAndTidyPinned(ignoreQuery, ignoreHash) {
       return { success: true, message: 'No matching tabs to pin.' };
     }
 
-    // Unpin tabs that don't match the pinned URL list
+    // Unpin tabs that don't match the pinned URL list (never touch split-view tabs)
     const toUnpin = [];
     const toKeep = [];
     for (const tab of currentlyPinned) {
+      if (isInSplitView(tab)) {
+        toKeep.push(tab);
+        continue;
+      }
       const url = tab.url || '';
       if (!isValidUrl(url)) {
         toKeep.push(tab);
@@ -839,9 +1188,13 @@ async function dedupeAndTidyPinned(ignoreQuery, ignoreHash) {
 
     // Pin any unpinned tabs that match the list
     const allTabsNow = await chrome.tabs.query({ windowId });
-    const tabsWithUrls = await Promise.all(
-      allTabsNow.map(async (tab) => ({ ...tab, url: await ensureTabUrl(tab) }))
-    );
+    const tabsWithUrls = (await Promise.all(
+      allTabsNow.map(async (tab) => {
+        const url = await ensureTabUrl(tab);
+        if (url === null) return null;
+        return { ...tab, url };
+      })
+    )).filter(Boolean);
     const alreadyPinnedIds = new Set(toKeep.map(t => t.id));
 
     for (const entry of entries) {
@@ -854,7 +1207,7 @@ async function dedupeAndTidyPinned(ignoreQuery, ignoreHash) {
       if (alreadyHave) continue;
 
       const matchingTab = tabsWithUrls.find(t => {
-        if (!t.url || !isValidUrl(t.url) || alreadyPinnedIds.has(t.id)) return false;
+        if (!t.url || !isValidUrl(t.url) || alreadyPinnedIds.has(t.id) || isInSplitView(t)) return false;
         const tNorm = normalizeUrl(t.url, ignoreQuery, ignoreHash);
         if (tNorm.startsWith('__invalid__') || tNorm.startsWith('__error__')) return false;
         return isPrefix ? tNorm.startsWith(norm) : tNorm === norm;
@@ -872,14 +1225,16 @@ async function dedupeAndTidyPinned(ignoreQuery, ignoreHash) {
       }
     }
 
-    // Order pinned tabs to match the list
-    toKeep.sort((a, b) => {
+    // Order pinned tabs to match the list (split-view tabs stay put — moving them unsplits)
+    const toReorder = toKeep.filter((t) => !isInSplitView(t));
+    toReorder.sort((a, b) => {
       const na = normalizeUrl(a.url || '', ignoreQuery, ignoreHash);
       const nb = normalizeUrl(b.url || '', ignoreQuery, ignoreHash);
       return getPinnedOrderIndex(na, entries) - getPinnedOrderIndex(nb, entries);
     });
-    for (let i = 0; i < toKeep.length; i++) {
-      await chrome.tabs.move(toKeep[i].id, { index: i });
+    const splitPinnedCount = toKeep.length - toReorder.length;
+    for (let i = 0; i < toReorder.length; i++) {
+      await chrome.tabs.move(toReorder[i].id, { index: splitPinnedCount + i });
     }
 
     const unpinned = toUnpin.length;
@@ -990,9 +1345,13 @@ async function syncPrTabGroup(windowId) {
 
   const win = windowId != null ? await chrome.windows.get(windowId) : (await chrome.windows.getCurrent());
   const allTabs = await chrome.tabs.query({ windowId: win.id });
-  const tabsWithUrls = await Promise.all(
-    allTabs.map(async (tab) => ({ ...tab, url: await ensureTabUrl(tab) }))
-  );
+  const tabsWithUrls = (await Promise.all(
+    allTabs.map(async (tab) => {
+      const url = await ensureTabUrl(tab);
+      if (url === null) return null;
+      return { ...tab, url };
+    })
+  )).filter(Boolean);
 
   let prGroupId = null;
   const groups = await chrome.tabGroups.query({ windowId: win.id });
@@ -1024,9 +1383,9 @@ async function syncPrTabGroup(windowId) {
       usedTabIds.add(existing.id);
       continue;
     }
-    // Prefer a tab elsewhere in the window with this URL
+    // Prefer a tab elsewhere in the window with this URL (never pull from a split view)
     const sameUrlTab = tabsWithUrls.find(t => {
-      if (!t.url || !isValidUrl(t.url)) return false;
+      if (!t.url || !isValidUrl(t.url) || isInSplitView(t)) return false;
       const tNorm = normalizedPrUrl(t.url, ignoreQuery, ignoreHash);
       return tNorm === norm && !usedTabIds.has(t.id);
     });
@@ -1072,6 +1431,21 @@ async function syncPrTabGroup(windowId) {
   return { success: true, message: `PR group updated with ${prUrls.length} PR(s).` };
 }
 
+function formatExistingGroupsForPrompt(existingGroups) {
+  if (!existingGroups || existingGroups.length === 0) return '';
+  const lines = existingGroups.map((group) => {
+    const samples = group.tabs.slice(0, 5).map(t =>
+      `"${(t.title || 'Untitled').replace(/"/g, "'")}"`
+    );
+    const more = group.tabs.length > 5 ? ` (+${group.tabs.length - 5} more)` : '';
+    return `Existing Group "${group.title}": ${group.tabs.length} tab(s) — ${samples.join(', ')}${more}`;
+  }).join('\n');
+  return `\n\nExisting Groups (merge ungrouped tabs from the list above into these groups when appropriate):
+${lines}
+
+IMPORTANT: Only assign tabs from the numbered list above. Tabs already in existing groups are not listed and must stay where they are. When merging, use the EXACT group name from an existing group. You can also create new groups for tabs that don't fit.`;
+}
+
 /** Build the tab-categorization prompt shared by every AI provider. */
 function buildOrganizePrompt(tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
   const tabList = tabs.map((tab, index) => {
@@ -1087,22 +1461,7 @@ function buildOrganizePrompt(tabs, customInstructions, existingGroups = null, sp
 Tabs:
 ${tabList}`;
 
-  // Add existing groups information if merging
-  if (existingGroups && existingGroups.length > 0) {
-    const existingGroupsInfo = existingGroups.map((group) => {
-      const groupTabs = group.tabs.map(t => {
-        const tabIndex = tabs.findIndex(tab => tab.id === t.id) + 1; // 1-based index
-        return tabIndex > 0 ? tabIndex : null;
-      }).filter(idx => idx !== null);
-
-      return `Existing Group "${group.title}": Contains tabs ${groupTabs.join(', ')}`;
-    }).join('\n');
-
-    basePrompt += `\n\nExisting Groups (merge new tabs into these groups where appropriate):
-${existingGroupsInfo}
-
-IMPORTANT: When merging tabs into existing groups, use the EXACT group name from the existing group. You can also create new groups for tabs that don't fit into existing groups.`;
-  }
+  basePrompt += formatExistingGroupsForPrompt(existingGroups);
 
   if (splitTabIndices && splitTabIndices.length > 0) {
     basePrompt += `\n\nSIDE-BY-SIDE SPLITS (these tab pairs/groups MUST stay together in the SAME group - never separate them):
@@ -1120,7 +1479,7 @@ ${minSizeRule}- If you have tabs that don't fit into any logical group, put them
 
 ${customInstructions ? `Additional instructions: ${customInstructions}\n` : ''}
 
-Return ONLY valid JSON, no other text. Example format:
+Return ONLY a JSON array of objects (no markdown, no prose, no domain shorthand like [domain.com]). Each object must have "groupName" (string) and "tabIndices" (array of numbers). Example:
 [{"groupName": "Work", "tabIndices": [1, 3, 5]}, {"groupName": "Social", "tabIndices": [2, 4]}, {"groupName": "Misc", "tabIndices": [6, 7]}]`;
 
   return basePrompt;
@@ -1130,55 +1489,90 @@ Return ONLY valid JSON, no other text. Example format:
 async function callOpenAI(apiKey, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
   const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, splitTabIndices, minGroupSize);
 
+  const resolvedModel = model || globalThis.getRecommendedModelId('openai');
+  const reasoningModel = isOpenAiReasoningModel(resolvedModel);
+  const requestBody = {
+    model: resolvedModel,
+    messages: [
+      {
+        role: 'user',
+        content: basePrompt
+      }
+    ],
+    // Reasoning models share this budget between hidden reasoning + visible output, so be generous
+    max_completion_tokens: reasoningModel ? 16000 : 5000,
+  };
+  if (reasoningModel) {
+    // Tab grouping is a structured but low-difficulty task; cap reasoning so the output budget isn't starved
+    requestBody.reasoning_effort = 'low';
+  }
+
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     },
-    body: JSON.stringify({
-      model: model || 'gpt-5-mini',
-      messages: [
-        {
-          role: 'user',
-          content: basePrompt
-        }
-      ],
-      max_completion_tokens: 5000
-    })
+    body: JSON.stringify(requestBody)
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: { message: 'Unknown error' } }));
-    console.error('[Smart Tab Organiser] OpenAI API error:', response.status, error);
-    throw new Error(error.error?.message || `OpenAI API error: ${response.status}`);
+    const errorBody = await response.json().catch(() => null);
+    const message = extractProviderErrorMessage(errorBody) || `OpenAI API error: ${response.status}`;
+    console.error('[Smart Tab Organiser] OpenAI API error:', response.status, message, errorBody);
+    throw new AiProviderError({ provider: 'openai', status: response.status, message, rawBody: errorBody });
   }
 
   const data = await response.json();
-  const content = data.choices[0]?.message?.content?.trim();
+  const firstChoice = data.choices?.[0];
+  const content = firstChoice?.message?.content?.trim();
 
   if (!content) {
+    const finishReason = firstChoice?.finish_reason;
+    const reasoningTokens = data.usage?.completion_tokens_details?.reasoning_tokens;
+    const completionTokens = data.usage?.completion_tokens;
     console.warn('[Smart Tab Organiser] OpenAI: no content in response. Full response:', {
       hasChoices: !!data.choices?.length,
       choicesLength: data.choices?.length ?? 0,
-      firstChoice: data.choices?.[0] ? {
-        message: data.choices[0].message,
-        finish_reason: data.choices[0].finish_reason
+      firstChoice: firstChoice ? {
+        message: firstChoice.message,
+        finish_reason: finishReason
       } : null,
       usage: data.usage,
       model: data.model
     });
-    throw new Error('No response from OpenAI');
+    // When a reasoning model hits its budget the API returns finish_reason='length' with all tokens spent on hidden reasoning
+    const truncatedByLength = finishReason === 'length';
+    const looksLikeReasoningExhaustion = truncatedByLength
+      || (reasoningTokens && completionTokens && completionTokens === reasoningTokens);
+    let message;
+    if (looksLikeReasoningExhaustion && reasoningModel) {
+      message = `OpenAI reasoning model "${resolvedModel}" used all ${completionTokens || reasoningTokens || '?'} tokens on hidden reasoning and produced no output. Pick a non-reasoning model (e.g. GPT-4.1) or one with lower reasoning effort.`;
+    } else if (truncatedByLength) {
+      message = `OpenAI response was cut off (finish_reason=length). Try a model with a larger output budget.`;
+    } else {
+      message = `OpenAI returned no content (finish_reason=${finishReason || 'unknown'}).`;
+    }
+    throw new AiProviderError({ provider: 'openai', message, rawBody: { finish_reason: finishReason, usage: data.usage, model: data.model } });
   }
 
-  // Extract JSON from response (in case there's extra text)
-  const jsonStr = extractJsonArray(content);
-  if (!jsonStr) {
-    console.warn('[Smart Tab Organiser] OpenAI: invalid format (no JSON array). Content preview:', content.slice(0, 200));
-    throw new Error('Invalid response format from OpenAI');
+  const groups = parseAiGroupsResponse(content);
+  if (!groups) {
+    console.warn('[Smart Tab Organiser] OpenAI: invalid format (no valid groups JSON). Content preview:', content.slice(0, 200));
+    throw new AiProviderError({ provider: 'openai', message: `OpenAI returned text that isn't a JSON array of groups (model=${resolvedModel}).` });
   }
 
-  return JSON.parse(jsonStr);
+  return groups;
+}
+
+/** OpenAI reasoning models share max_completion_tokens between hidden reasoning + output and accept `reasoning_effort`. */
+function isOpenAiReasoningModel(modelId) {
+  if (!modelId) return false;
+  const id = modelId.toLowerCase();
+  // o-series and gpt-5+ are reasoning-capable; gpt-4.x and gpt-4o are not
+  if (/^o\d/.test(id)) return true; // o1, o3, o4 …
+  if (/^gpt-5/.test(id)) return true; // gpt-5.x, gpt-5.6-sol/terra/luna, …
+  return false;
 }
 
 // Call Claude API to categorize tabs
@@ -1194,7 +1588,7 @@ async function callClaude(apiKey, model, tabs, customInstructions, existingGroup
       'anthropic-dangerous-direct-browser-access': 'true'
     },
     body: JSON.stringify({
-      model: model || 'claude-haiku-4-5-20251001',
+      model: model || globalThis.getRecommendedModelId('claude'),
       max_tokens: 5000,
       messages: [
         {
@@ -1206,9 +1600,10 @@ async function callClaude(apiKey, model, tabs, customInstructions, existingGroup
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: { message: 'Unknown error' } }));
-    console.error('[Smart Tab Organiser] Claude API error:', response.status, error);
-    throw new Error(error.error?.message || `Claude API error: ${response.status}`);
+    const errorBody = await response.json().catch(() => null);
+    const message = extractProviderErrorMessage(errorBody) || `Claude API error: ${response.status}`;
+    console.error('[Smart Tab Organiser] Claude API error:', response.status, message, errorBody);
+    throw new AiProviderError({ provider: 'claude', status: response.status, message, rawBody: errorBody });
   }
 
   const data = await response.json();
@@ -1223,24 +1618,23 @@ async function callClaude(apiKey, model, tabs, customInstructions, existingGroup
       usage: data.usage,
       model: data.model
     });
-    throw new Error('No response from Claude');
+    throw new AiProviderError({ provider: 'claude', message: 'No response from Claude' });
   }
 
-  // Extract JSON from response (in case there's extra text)
-  const jsonStr = extractJsonArray(content);
-  if (!jsonStr) {
-    console.warn('[Smart Tab Organiser] Claude: invalid format (no JSON array). Content preview:', content.slice(0, 200));
-    throw new Error('Invalid response format from Claude');
+  const groups = parseAiGroupsResponse(content);
+  if (!groups) {
+    console.warn('[Smart Tab Organiser] Claude: invalid format (no valid groups JSON). Content preview:', content.slice(0, 200));
+    throw new AiProviderError({ provider: 'claude', message: 'Invalid response format from Claude' });
   }
 
-  return JSON.parse(jsonStr);
+  return groups;
 }
 
 // Call Gemini API to categorize tabs
 async function callGemini(apiKey, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
   const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, splitTabIndices, minGroupSize);
 
-  const modelId = model || 'gemini-2.0-flash';
+  const modelId = model || globalThis.getRecommendedModelId('gemini');
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`;
   const response = await fetch(url, {
     method: 'POST',
@@ -1258,9 +1652,10 @@ async function callGemini(apiKey, model, tabs, customInstructions, existingGroup
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: { message: 'Unknown error' } }));
-    console.error('[Smart Tab Organiser] Gemini API error:', response.status, error);
-    throw new Error(error.error?.message || error.message || `Gemini API error: ${response.status}`);
+    const errorBody = await response.json().catch(() => null);
+    const message = extractProviderErrorMessage(errorBody) || `Gemini API error: ${response.status}`;
+    console.error('[Smart Tab Organiser] Gemini API error:', response.status, message, errorBody);
+    throw new AiProviderError({ provider: 'gemini', status: response.status, message, rawBody: errorBody });
   }
 
   const data = await response.json();
@@ -1272,16 +1667,16 @@ async function callGemini(apiKey, model, tabs, customInstructions, existingGroup
       finishReason: data.candidates?.[0]?.finishReason,
       usage: data.usageMetadata
     });
-    throw new Error('No response from Gemini');
+    throw new AiProviderError({ provider: 'gemini', message: 'No response from Gemini' });
   }
 
-  const jsonStr = extractJsonArray(content);
-  if (!jsonStr) {
-    console.warn('[Smart Tab Organiser] Gemini: invalid format (no JSON array). Content preview:', content.slice(0, 200));
-    throw new Error('Invalid response format from Gemini');
+  const groups = parseAiGroupsResponse(content);
+  if (!groups) {
+    console.warn('[Smart Tab Organiser] Gemini: invalid format (no valid groups JSON). Content preview:', content.slice(0, 200));
+    throw new AiProviderError({ provider: 'gemini', message: 'Invalid response format from Gemini' });
   }
 
-  return JSON.parse(jsonStr);
+  return groups;
 }
 
 // ---------------------------------------------------------------------------
@@ -1414,20 +1809,13 @@ async function callLocalModel(rawBaseUrl, model, tabs, customInstructions, exist
       continue;
     }
 
-    // Extract JSON from response (in case there's extra text)
-    const jsonStr = extractJsonArray(content);
-    if (!jsonStr) {
-      console.warn('[Smart Tab Organiser] Local model: invalid format (no JSON array). Content preview:', content.slice(0, 200));
+    const groups = parseAiGroupsResponse(content);
+    if (!groups) {
+      console.warn('[Smart Tab Organiser] Local model: invalid format. Content preview:', content.slice(0, 200));
       lastError = new Error(`Invalid response format from local model "${model}"`);
       continue;
     }
-
-    try {
-      return JSON.parse(jsonStr);
-    } catch (error) {
-      console.warn('[Smart Tab Organiser] Local model: JSON parse failed. Content preview:', content.slice(0, 200));
-      lastError = new Error(`Invalid JSON from local model "${model}"`);
-    }
+    return groups;
   }
 
   throw lastError || new Error('Local model produced no usable response');
@@ -1575,20 +1963,10 @@ async function callChromeAI(tabs, customInstructions, existingGroups = null, spl
       session.destroy();
     }
 
-    const jsonStr = extractJsonArray((content || '').trim());
-    if (!jsonStr) {
-      console.warn('[Smart Tab Organiser] Chrome AI: invalid format (no JSON array). Content preview:', (content || '').slice(0, 200));
+    const groups = parseAiGroupsResponse((content || '').trim());
+    if (!groups) {
+      console.warn('[Smart Tab Organiser] Chrome AI: invalid format. Content preview:', (content || '').slice(0, 200));
       throw new Error('Invalid response format from Chrome built-in AI');
-    }
-
-    let groups;
-    try {
-      groups = JSON.parse(jsonStr);
-    } catch (error) {
-      throw new Error('Invalid JSON from Chrome built-in AI');
-    }
-    if (!Array.isArray(groups)) {
-      throw new Error('Invalid response from Chrome built-in AI: expected array of groups');
     }
 
     // Shift batch-local indices back to global 1-based tab indices.
@@ -1602,10 +1980,99 @@ async function callChromeAI(tabs, customInstructions, existingGroups = null, spl
 
   return mergeGroupBatches(results);
 }
-
 // Organize tabs using AI
 const ALWAYS_PRESERVED_GROUP_NAMES = ['BOOKMARKS', 'PRs'];
 const PR_GROUP_TITLE = 'PRs';
+
+function tabTitleForSort(tab) {
+  return (tab.title || '').trim() || 'Untitled';
+}
+
+/** Reorder tabs inside each group A–Z by page title (skips BOOKMARKS and PRs). */
+async function sortTabsWithinGroupsByTitle(windowId) {
+  const groups = await chrome.tabGroups.query({ windowId });
+  for (const group of groups) {
+    const name = (group.title || '').trim().toUpperCase();
+    if (ALWAYS_PRESERVED_GROUP_NAMES.includes(name)) continue;
+
+    const tabs = await chrome.tabs.query({ groupId: group.id });
+    if (tabs.length <= 1) continue;
+    if (tabs.some((t) => isInSplitView(t))) continue;
+
+    const sorted = [...tabs].sort((a, b) =>
+      tabTitleForSort(a).localeCompare(tabTitleForSort(b), undefined, { sensitivity: 'base', numeric: true })
+    );
+    const anchorIndex = Math.min(...tabs.map((t) => t.index));
+    for (let i = 0; i < sorted.length; i++) {
+      await chrome.tabs.move(sorted[i].id, { index: anchorIndex + i });
+    }
+  }
+}
+
+/** Dispatch to the right provider-specific call. Wraps non-AiProviderError throws so we always get structured errors. */
+async function callProvider(provider, settings, tabs, instructions, existingGroupsForAI, splitTabIndices, minTabs) {
+  try {
+    if (provider === 'openai') {
+      const key = settings.openaiKey?.trim();
+      if (!key) throw new AiProviderError({ provider, message: 'OpenAI API key not configured' });
+      const model = globalThis.resolveStoredModel('openai', settings.openaiModel);
+      return await callOpenAI(key, model, tabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+    }
+    if (provider === 'claude') {
+      const key = settings.claudeKey?.trim();
+      if (!key) throw new AiProviderError({ provider, message: 'Claude API key not configured' });
+      const model = globalThis.resolveStoredModel('claude', settings.claudeModel);
+      return await callClaude(key, model, tabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+    }
+    if (provider === 'gemini') {
+      const key = settings.geminiKey?.trim();
+      if (!key) throw new AiProviderError({ provider, message: 'Gemini API key not configured' });
+      const model = globalThis.resolveStoredModel('gemini', settings.geminiModel);
+      return await callGemini(key, model, tabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+    }
+    if (provider === 'chrome-ai') {
+      // On-device: no key, nothing leaves the machine.
+      return await callChromeAI(tabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+    }
+    if (provider === 'local') {
+      const model = settings.localModel?.trim();
+      if (!model) throw new AiProviderError({ provider, message: 'No local model name configured' });
+      const baseUrl = settings.localBaseUrl?.trim() || DEFAULT_OLLAMA_BASE_URL;
+      return await callLocalModel(baseUrl, model, tabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+    }
+    throw new AiProviderError({ provider, message: `Unknown AI provider: ${provider}` });
+  } catch (err) {
+    if (err instanceof AiProviderError) throw err;
+    throw new AiProviderError({ provider, message: err?.message || String(err), cause: err });
+  }
+}
+
+function providerHasKey(provider, settings) {
+  if (provider === 'openai') return !!settings.openaiKey?.trim();
+  if (provider === 'claude') return !!settings.claudeKey?.trim();
+  if (provider === 'gemini') return !!settings.geminiKey?.trim();
+  return false;
+}
+
+/**
+ * Build the ordered list of providers to attempt: primary first, then configured fallbacks.
+ *
+ * Picking an on-device provider is a privacy decision, so those never fall back to anything.
+ * Falling back to a cloud provider would silently send tab data off the machine, defeating
+ * the reason for choosing on-device; falling back to the other on-device provider could
+ * trigger a surprise multi-gigabyte model download. On-device failures surface instead.
+ */
+function buildProviderChain(settings) {
+  const primary = settings.aiProvider || 'openai';
+  const chain = [primary];
+  if (settings.aiFallbackEnabled !== false && !isOnDeviceProvider(primary)) {
+    for (const p of ALL_PROVIDERS) {
+      if (p === primary) continue;
+      if (providerHasKey(p, settings)) chain.push(p);
+    }
+  }
+  return chain;
+}
 
 async function organizeTabs(preserveGroups, mergeIntoExisting, customInstructions, preserveGroupsMinTabs = 1) {
   try {
@@ -1613,57 +2080,36 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
 
     // Get AI settings
     const settings = await chrome.storage.local.get([
-      'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider',
+      'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled',
       'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
       'localBaseUrl', 'localModel'
     ]);
-    const provider = settings.aiProvider || 'openai';
-    const openaiKey = settings.openaiKey?.trim();
-    const claudeKey = settings.claudeKey?.trim();
-    const geminiKey = settings.geminiKey?.trim();
-    const openaiModel = settings.openaiModel || 'gpt-5-mini';
-    const claudeModel = settings.claudeModel || 'claude-haiku-4-5-20251001';
-    const geminiModel = settings.geminiModel || 'gemini-2.0-flash';
-    const localBaseUrl = settings.localBaseUrl?.trim() || DEFAULT_OLLAMA_BASE_URL;
-    const localModel = settings.localModel?.trim();
-    
+
     // Use custom instructions from parameter, or fall back to saved options instructions
     const instructions = customInstructions || settings.customInstructionsOptions || '';
 
-    // Validate API key
-    if (provider === 'openai' && !openaiKey) {
-      throw new Error('OpenAI API key not configured. Please set it in the options page.');
-    }
-    if (provider === 'claude' && !claudeKey) {
-      throw new Error('Claude API key not configured. Please set it in the options page.');
-    }
-    if (provider === 'gemini' && !geminiKey) {
-      throw new Error('Gemini API key not configured. Please set it in the options page.');
-    }
-    // Local providers need no key: 'local' needs a model name, 'chrome-ai' needs nothing.
-    if (provider === 'local' && !localModel) {
-      throw new Error('No local model name configured. Please set it in the options page (e.g. "llama3.1:8b").');
+    // Validate that at least one valid provider key is available
+    const providerChain = buildProviderChain(settings);
+    const usableChain = providerChain.filter((p) => providerHasKey(p, settings));
+    if (usableChain.length === 0) {
+      const primaryLabel = providerLabel(providerChain[0] || 'openai');
+      return {
+        success: false,
+        error: `${primaryLabel} API key not configured. Add a key in Smart Tab Organiser settings, or configure another provider as fallback.`,
+      };
     }
 
-    // Get all tabs in current window
-    const tabs = await chrome.tabs.query({ currentWindow: true });
-    
-    // Filter out extension pages and invalid URLs
-    const validTabs = tabs.filter(tab => {
-      const url = tab.url || '';
-      return !url.startsWith('chrome://') && 
-             !url.startsWith('chrome-extension://') &&
-             !url.startsWith('edge://') &&
-             !url.startsWith('about:') &&
-             url.startsWith('http');
-    });
+    // Resolve URLs for suspended tabs (e.g. Arc) before filtering
+    const validTabs = await getOrganizableTabsInCurrentWindow();
 
     if (validTabs.length === 0) {
       return {
         success: false,
-        error: 'No valid tabs to organize'
+        error: 'No valid tabs to organize (only http/https pages can be grouped)'
       };
     }
+
+    const tabs = validTabs;
 
     // Always know which groups are BOOKMARKS / PRs so we never touch them (regardless of settings)
     // Pinned tabs (Chrome-native) are excluded separately via tab.pinned
@@ -1692,8 +2138,10 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     for (const group of allGroups) {
       if (preservedGroupIds.has(group.id)) continue;
       const groupTabs = await chrome.tabs.query({ groupId: group.id });
-      if (groupTabs.length > 0) {
-        await chrome.tabs.ungroup(groupTabs.map(t => t.id));
+      if (groupTabs.some((t) => isInSplitView(t))) continue;
+      const liveIds = await filterExistingTabIds(groupTabs.map((t) => t.id));
+      if (liveIds.length > 0) {
+        await chrome.tabs.ungroup(liveIds);
       }
     }
 
@@ -1715,35 +2163,32 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
       }
     }
 
-    // Re-query tabs after ungrouping so tab.groupId is up to date
-    const tabsAfterUngroup = await chrome.tabs.query({ currentWindow: true });
-    const validTabsAfterUngroup = tabsAfterUngroup.filter(tab => {
-      const url = tab.url || '';
-      return !url.startsWith('chrome://') && !url.startsWith('chrome-extension://') &&
-             !url.startsWith('edge://') && !url.startsWith('about:') && url.startsWith('http');
-    });
+    // Re-query after ungrouping so tab.groupId is up to date (with URLs for suspended tabs)
+    const validTabsAfterUngroup = await getOrganizableTabsInCurrentWindow();
 
-    // Determine which tabs to send to AI
-    // When merging, send all tabs so AI has full context
-    // When preserving (but not merging), only send tabs not in a preserved group
-    // Always exclude Chrome-pinned tabs, BOOKMARKS, and PRs
-    let tabsForAI = mergeIntoExisting
-      ? validTabsAfterUngroup
-      : (preserveGroups
-          ? validTabsAfterUngroup.filter(tab => !tab.groupId || tab.groupId === -1 || !preservedGroupIds.has(tab.groupId))
-          : validTabsAfterUngroup);
-
-    tabsForAI = tabsForAI.filter(tab => {
+    // Tabs to send to AI: never pinned, BOOKMARKS, or PRs.
+    // When preserving or merging, skip tabs already in a preserved group (prompt lists those separately).
+    // When not preserving, every organizable tab is eligible.
+    const tabsForAI = validTabsAfterUngroup.filter((tab) => {
       if (tab.pinned) return false;
+      if (isInSplitView(tab)) return false;
       if (bookmarksGroupIds.has(tab.groupId)) return false;
       if (prGroupIds.has(tab.groupId)) return false;
+      if (preserveGroups || mergeIntoExisting) {
+        if (tab.groupId && tab.groupId !== -1 && preservedGroupIds.has(tab.groupId)) {
+          return false;
+        }
+      }
       return true;
     });
 
     if (tabsForAI.length === 0) {
+      const hint = preserveGroups || mergeIntoExisting
+        ? ' All organizable tabs are already in preserved groups — disable "Preserve existing groups" or ungroup some tabs first.'
+        : '';
       return {
         success: false,
-        error: 'No tabs to organize'
+        error: `No tabs to organize.${hint}`
       };
     }
 
@@ -1751,32 +2196,62 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     const splitMap = new Map();
     tabsForAI.forEach((tab, index) => {
       const svId = tab.splitViewId;
-      if (svId !== undefined && svId !== -1) {
+      if (typeof svId === 'number' && svId !== SPLIT_VIEW_NONE) {
         if (!splitMap.has(svId)) splitMap.set(svId, []);
         splitMap.get(svId).push(index + 1); // 1-based index for AI
       }
     });
     const splitTabIndices = Array.from(splitMap.values()).filter(indices => indices.length >= 2);
 
-    // Call AI API with existing groups info if merging
-    let groups;
+    // Call AI API (with fallback chain) — try primary first, then configured fallbacks
+    let groups = null;
+    let providerUsed = null;
+    const failures = [];
     const existingGroupsForAI = mergeIntoExisting ? existingGroupsInfo : null;
-    
-    if (provider === 'openai') {
-      groups = await callOpenAI(openaiKey, openaiModel, tabsForAI, instructions, existingGroupsForAI, splitTabIndices, minTabs);
-    } else if (provider === 'claude') {
-      groups = await callClaude(claudeKey, claudeModel, tabsForAI, instructions, existingGroupsForAI, splitTabIndices, minTabs);
-    } else if (provider === 'chrome-ai') {
-      groups = await callChromeAI(tabsForAI, instructions, existingGroupsForAI, splitTabIndices, minTabs);
-    } else if (provider === 'local') {
-      groups = await callLocalModel(localBaseUrl, localModel, tabsForAI, instructions, existingGroupsForAI, splitTabIndices, minTabs);
-    } else {
-      groups = await callGemini(geminiKey, geminiModel, tabsForAI, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+
+    for (const provider of usableChain) {
+      try {
+        const result = await callProvider(provider, settings, tabsForAI, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+        if (!Array.isArray(result) || result.length === 0) {
+          throw new AiProviderError({ provider, message: `Invalid response from ${providerLabel(provider)}: expected array of groups` });
+        }
+        groups = result;
+        providerUsed = provider;
+        break;
+      } catch (err) {
+        const aiErr = err instanceof AiProviderError
+          ? err
+          : new AiProviderError({ provider, message: err?.message || String(err), cause: err });
+        const classification = classifyAiError(aiErr);
+        console.warn(`[Smart Tab Organiser] Provider ${provider} failed:`, classification.summary, aiErr);
+        failures.push({ provider, classification, raw: aiErr.message });
+      }
     }
 
-    if (!Array.isArray(groups) || groups.length === 0) {
-      throw new Error('Invalid response from AI: expected array of groups');
+    if (!groups) {
+      return {
+        success: false,
+        error: buildMultiProviderErrorMessage(failures),
+        failures: failures.map((f) => ({
+          provider: f.provider,
+          providerLabel: providerLabel(f.provider),
+          type: f.classification.type,
+          summary: f.classification.summary,
+          detail: f.classification.detail,
+          hint: f.classification.hint,
+        })),
+      };
     }
+
+    const fallbackInfo = failures.length > 0
+      ? {
+        providerUsed,
+        primaryFailed: failures[0].provider,
+        primaryFailedLabel: providerLabel(failures[0].provider),
+        primaryFailedSummary: failures[0].classification.summary,
+        attempts: failures.length + 1,
+      }
+      : null;
 
     // Enforce minimum group size: merge any group with ≤ minTabs tabs into Misc
     if (minTabs > 0) {
@@ -1820,8 +2295,8 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     }
 
     // Never move tabs to another window: only operate on tabs in the current window
-    const currentWindowId = tabs[0].windowId;
-    const currentWindowTabIds = new Set(tabs.map(t => t.id));
+    const currentWindowId = validTabs[0].windowId;
+    const currentWindowTabIds = new Set(validTabsAfterUngroup.map((t) => t.id));
 
     // Create or update tab groups
     let groupedCount = 0;
@@ -1861,19 +2336,20 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
         })
         .filter(id => id !== null && !usedTabIndices.has(id) && currentWindowTabIds.has(id));
 
-      if (tabIds.length === 0) {
+      const liveTabIds = await filterExistingTabIds(tabIds);
+      if (liveTabIds.length === 0) {
         continue;
       }
 
       // Handle single-tab groups: add to Misc
-      if (tabIds.length === 1) {
-        miscTabIds.push(...tabIds);
-        usedTabIndices.add(tabIds[0]);
+      if (liveTabIds.length === 1) {
+        miscTabIds.push(...liveTabIds);
+        usedTabIndices.add(liveTabIds[0]);
         continue;
       }
 
       // Mark tabs as used
-      tabIds.forEach(id => usedTabIndices.add(id));
+      liveTabIds.forEach((id) => usedTabIndices.add(id));
 
       // Check if we should merge into an existing group
       const groupNameLower = group.groupName.toLowerCase();
@@ -1881,18 +2357,22 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
       
       let groupId;
       if (existingGroupId) {
-        // Merge into existing group (only tabs in current window)
+        // Merge only newly assigned tabs — do not re-group existing members (avoids reordering)
         const existingTabs = await chrome.tabs.query({ groupId: existingGroupId });
-        const existingTabIds = existingTabs
-          .filter(t => t.windowId === currentWindowId)
-          .map(t => t.id);
-        const allTabIds = [...new Set([...existingTabIds, ...tabIds])].filter(id => currentWindowTabIds.has(id));
-        await chrome.tabs.group({ groupId: existingGroupId, tabIds: allTabIds });
+        const existingTabIdSet = new Set(
+          existingTabs.filter(t => t.windowId === currentWindowId).map(t => t.id)
+        );
+        const newTabIds = await filterExistingTabIds(
+          liveTabIds.filter((id) => !existingTabIdSet.has(id) && currentWindowTabIds.has(id))
+        );
+        if (newTabIds.length > 0) {
+          await chrome.tabs.group({ groupId: existingGroupId, tabIds: newTabIds });
+          groupedCount += newTabIds.length;
+        }
         groupId = existingGroupId;
-        groupedCount += tabIds.length; // Only count newly added tabs
       } else {
         // Create new group (only current-window tabs)
-        groupId = await chrome.tabs.group({ tabIds });
+        groupId = await chrome.tabs.group({ tabIds: liveTabIds });
         
         // Pick a color not yet used; if all used, cycle through
         const available = allColors.filter(c => !usedColors.has(c));
@@ -1904,7 +2384,7 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
           color: color
         });
         
-        groupedCount += tabIds.length;
+        groupedCount += liveTabIds.length;
         groupCount++;
       }
     }
@@ -1923,21 +2403,26 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     }
 
     // Create or merge into Misc group if we have tabs for it
-    if (miscTabIds.length > 0) {
+    const liveMiscTabIds = await filterExistingTabIds(miscTabIds);
+    if (liveMiscTabIds.length > 0) {
       const existingMiscGroupId = existingGroupMap.get('misc');
       
       if (existingMiscGroupId) {
-        // Merge into existing Misc group (only current-window tabs)
+        // Merge only new tabs into existing Misc group (do not reorder existing members)
         const existingTabs = await chrome.tabs.query({ groupId: existingMiscGroupId });
-        const existingTabIds = existingTabs
-          .filter(t => t.windowId === currentWindowId)
-          .map(t => t.id);
-        const allMiscTabIds = [...new Set([...existingTabIds, ...miscTabIds])].filter(id => currentWindowTabIds.has(id));
-        await chrome.tabs.group({ groupId: existingMiscGroupId, tabIds: allMiscTabIds });
-        groupedCount += miscTabIds.length;
+        const existingTabIdSet = new Set(
+          existingTabs.filter(t => t.windowId === currentWindowId).map(t => t.id)
+        );
+        const newMiscTabIds = await filterExistingTabIds(
+          liveMiscTabIds.filter((id) => !existingTabIdSet.has(id) && currentWindowTabIds.has(id))
+        );
+        if (newMiscTabIds.length > 0) {
+          await chrome.tabs.group({ groupId: existingMiscGroupId, tabIds: newMiscTabIds });
+          groupedCount += newMiscTabIds.length;
+        }
       } else {
         // Create new Misc group (only current-window tabs)
-        const miscIdsInWindow = miscTabIds.filter(id => currentWindowTabIds.has(id));
+        const miscIdsInWindow = liveMiscTabIds.filter((id) => currentWindowTabIds.has(id));
         if (miscIdsInWindow.length > 0) {
           const newMiscGroupId = await chrome.tabs.group({ tabIds: miscIdsInWindow });
           await chrome.tabGroups.update(newMiscGroupId, {
@@ -1950,10 +2435,18 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
       }
     }
 
+    const sortSettings = await chrome.storage.local.get(['sortTabsWithinGroupsByTitle']);
+    if (sortSettings.sortTabsWithinGroupsByTitle === true) {
+      await sortTabsWithinGroupsByTitle(currentWindowId);
+    }
+
     return {
       success: true,
       groupedCount,
-      groupCount
+      groupCount,
+      providerUsed,
+      providerUsedLabel: providerUsed ? providerLabel(providerUsed) : null,
+      fallbackInfo
     };
   } catch (error) {
     console.error('Error organizing tabs:', error);

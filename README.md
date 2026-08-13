@@ -26,6 +26,8 @@ A Chrome extension that **deduplicates tabs** (including smart rules for hashes/
 
 Two of the five AI providers run entirely on your own machine. Pick either one under **Options → Preferred AI Provider**.
 
+> **On-device providers never fall back.** The extension can automatically retry other providers when the primary one fails, but that is deliberately disabled for on-device providers: falling back to a cloud provider would send your tab data off the machine, which is the reason for choosing on-device in the first place. On-device failures surface as an error instead.
+
 ### Chrome built-in AI (Gemini Nano)
 
 Nothing to install — the model runs inside Chrome itself.

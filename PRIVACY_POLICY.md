@@ -76,6 +76,8 @@ Two AI providers involve **no third-party service and no network transmission of
 
 No API key is required for either option, and neither sends anything to the extension author.
 
+**No silent fallback to the cloud**: the extension can automatically retry a different provider when the selected one fails. This fallback is deliberately disabled when you select an on-device provider, so a local failure never causes your tab data to be sent to a cloud AI service instead. Cloud providers only fall back to other cloud providers you have configured a key for.
+
 ### GitHub API (optional)
 
 If you configure a **GitHub personal access token** and use the pull-request tab group (or related) features, the extension contacts **api.github.com** using **your** token to search for pull requests and build/update tabs. **What is sent**: HTTP requests authorised by your token (for example, user identity and search queries for open PRs as implemented in the extension). **What is not sent to us**: Nothing is sent to the extension author; requests go from your browser to GitHub only.

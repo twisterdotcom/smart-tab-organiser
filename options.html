@@ -219,6 +219,21 @@
           </select>
         </div>
 
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label">Use fallback providers if primary fails</label>
+            <p class="setting-description">
+              When enabled, if your preferred provider fails (CORS block, invalid key, rate limit, outage, bad response, etc.), the extension automatically tries your other configured providers in order until one succeeds. Add API keys above for any providers you want to use as fallbacks.
+              <br><strong>On-device providers never fall back</strong>, since falling back to a cloud provider would send your tab data off the machine — the reason for choosing on-device in the first place.
+            </p>
+            <p id="aiFallbackHint" class="setting-description model-recommended-hint"></p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="aiFallbackEnabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+
         <div class="setting-item setting-item--stacked">
           <div class="setting-info">
             <label class="setting-label">Chrome built-in AI (Gemini Nano)</label>
@@ -259,55 +274,33 @@
           <div class="setting-info">
             <label class="setting-label" for="openaiModel">OpenAI Model</label>
             <p class="setting-description">
-              Choose which OpenAI model to use for tab organization.
+              Choose which OpenAI model to use for tab organization. The recommended model is marked in the list.
             </p>
+            <p class="setting-description model-recommended-hint" id="openaiModelRecommended"></p>
           </div>
-          <select id="openaiModel" class="provider-select">
-            <option value="gpt-5.2">GPT-5.2 (Most capable)</option>
-            <option value="gpt-5.2-pro">GPT-5.2 Pro (Smarter, more precise)</option>
-            <option value="gpt-5-mini">GPT-5 mini (Balanced, cost-efficient)</option>
-            <option value="gpt-5-nano">GPT-5 nano (Fastest, cheapest)</option>
-            <option value="gpt-5">GPT-5 (Reasoning model)</option>
-            <option value="gpt-4.1">GPT-4.1 (Smartest non-reasoning)</option>
-            <option value="gpt-4.1-mini">GPT-4.1 mini (Fast, cost-effective)</option>
-            <option value="gpt-4.1-nano">GPT-4.1 nano (Lightweight)</option>
-            <option value="gpt-4o">GPT-4o (Legacy)</option>
-            <option value="gpt-4o-mini">GPT-4o mini (Legacy)</option>
-          </select>
+          <select id="openaiModel" class="provider-select" aria-describedby="openaiModelRecommended"></select>
         </div>
         
         <div class="setting-item">
           <div class="setting-info">
             <label class="setting-label" for="claudeModel">Claude Model</label>
             <p class="setting-description">
-              Choose which Claude model to use for tab organization.
+              Choose which Claude model to use for tab organization. The recommended model is marked in the list.
             </p>
+            <p class="setting-description model-recommended-hint" id="claudeModelRecommended"></p>
           </div>
-          <select id="claudeModel" class="provider-select">
-            <option value="claude-opus-4-6">Claude Opus 4.6 (Most capable)</option>
-            <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (Balanced)</option>
-            <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Fast, Cost-effective)</option>
-            <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku (Legacy)</option>
-            <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet (Legacy)</option>
-            <option value="claude-3-opus-20240229">Claude 3 Opus (Legacy)</option>
-            <option value="claude-3-sonnet-20240229">Claude 3 Sonnet (Legacy)</option>
-          </select>
+          <select id="claudeModel" class="provider-select" aria-describedby="claudeModelRecommended"></select>
         </div>
         
         <div class="setting-item">
           <div class="setting-info">
             <label class="setting-label" for="geminiModel">Gemini Model</label>
             <p class="setting-description">
-              Choose which Gemini model to use for tab organization.
+              Choose which Gemini model to use for tab organization. The recommended model is marked in the list.
             </p>
+            <p class="setting-description model-recommended-hint" id="geminiModelRecommended"></p>
           </div>
-          <select id="geminiModel" class="provider-select">
-            <option value="gemini-2.0-flash">Gemini 2.0 Flash (Fast, capable)</option>
-            <option value="gemini-2.0-flash-lite">Gemini 2.0 Flash Lite (Fastest)</option>
-            <option value="gemini-1.5-flash">Gemini 1.5 Flash (Balanced)</option>
-            <option value="gemini-1.5-flash-8b">Gemini 1.5 Flash-8B (Lightweight)</option>
-            <option value="gemini-1.5-pro">Gemini 1.5 Pro (Most capable)</option>
-          </select>
+          <select id="geminiModel" class="provider-select" aria-describedby="geminiModelRecommended"></select>
         </div>
         
         <div id="custom-instructions" class="setting-item setting-item--stacked">
@@ -368,6 +361,20 @@
         
         <div class="setting-item">
           <div class="setting-info">
+            <label class="setting-label">Sort tabs within groups by title</label>
+            <p class="setting-description">
+              When enabled, after organization, tabs inside each group are ordered alphabetically by page title (A–Z).
+              <br><strong>BOOKMARKS</strong> and <strong>PRs</strong> groups are not reordered.
+            </p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="sortTabsWithinGroupsByTitle">
+            <span class="slider"></span>
+          </label>
+        </div>
+        
+        <div class="setting-item">
+          <div class="setting-info">
             <label class="setting-label">Organize tabs on extension icon click</label>
             <p class="setting-description">
               When enabled, clicking the extension icon will deduplicate tabs AND organize them using AI.
@@ -386,6 +393,7 @@
       <p>Settings are automatically saved.</p>
     </footer>
   </div>
+  <script src="ai-models.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

@@ -127,7 +127,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
 
       if (result.success) {
-        status.textContent = `Organized ${result.groupedCount} tab(s) into ${result.groupCount} group(s).`;
+        let msg = `Organized ${result.groupedCount} tab(s) into ${result.groupCount} group(s).`;
+        if (result.fallbackInfo) {
+          msg += ` Used ${result.providerUsedLabel} after ${result.fallbackInfo.primaryFailedLabel} failed (${result.fallbackInfo.primaryFailedSummary}).`;
+        }
+        status.textContent = msg;
         status.className = 'status success';
       } else {
         status.textContent = result.error || 'An error occurred';

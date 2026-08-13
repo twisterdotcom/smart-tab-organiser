@@ -155,6 +155,7 @@ input:focus + .slider {
   text-align: center;
   min-height: 20px;
   line-height: 1.5;
+  white-space: pre-line;
 }
 
 .status.success {
