@@ -16,15 +16,41 @@ document.addEventListener('DOMContentLoaded', async () => {
   const claudeKeyInput = document.getElementById('claudeKey');
   const geminiKeyInput = document.getElementById('geminiKey');
   const aiProviderSelect = document.getElementById('aiProvider');
+  const aiFallbackEnabledCheckbox = document.getElementById('aiFallbackEnabled');
+  const aiFallbackHintEl = document.getElementById('aiFallbackHint');
   const openaiModelSelect = document.getElementById('openaiModel');
   const claudeModelSelect = document.getElementById('claudeModel');
   const geminiModelSelect = document.getElementById('geminiModel');
+  const openaiModelRecommendedEl = document.getElementById('openaiModelRecommended');
+  const claudeModelRecommendedEl = document.getElementById('claudeModelRecommended');
+  const geminiModelRecommendedEl = document.getElementById('geminiModelRecommended');
+
+  function updateModelRecommendedHint(provider, hintEl, selectEl) {
+    if (!hintEl || !selectEl) return;
+    const recommendedId = globalThis.getRecommendedModelId(provider);
+    const isRecommended = selectEl.value === recommendedId;
+    hintEl.textContent = isRecommended
+      ? `Using the recommended model: ${globalThis.describeRecommendedModel(provider)}.`
+      : `Recommended: ${globalThis.describeRecommendedModel(provider)} (${recommendedId}).`;
+  }
+
+  function wireModelSelect(selectEl, provider, hintEl, storageKey) {
+    selectEl.addEventListener('change', () => {
+      chrome.storage.local.set({ [storageKey]: selectEl.value });
+      updateModelRecommendedHint(provider, hintEl, selectEl);
+    });
+  }
+
+  wireModelSelect(openaiModelSelect, 'openai', openaiModelRecommendedEl, 'openaiModel');
+  wireModelSelect(claudeModelSelect, 'claude', claudeModelRecommendedEl, 'claudeModel');
+  wireModelSelect(geminiModelSelect, 'gemini', geminiModelRecommendedEl, 'geminiModel');
   const customInstructionsOptions = document.getElementById('customInstructionsOptions');
   const preserveGroupsCheckbox = document.getElementById('preserveGroups');
   const preserveGroupsMinTabsInput = document.getElementById('preserveGroupsMinTabs');
   const preserveGroupsMinTabsRow = document.getElementById('preserveGroupsMinTabsRow');
   const preserveGroupsMinTabsWarning = document.getElementById('preserveGroupsMinTabsWarning');
   const mergeIntoExistingCheckbox = document.getElementById('mergeIntoExisting');
+  const sortTabsWithinGroupsByTitleCheckbox = document.getElementById('sortTabsWithinGroupsByTitle');
   const organizeOnClickCheckbox = document.getElementById('organizeOnClick');
   const organizeTabsBtn = document.getElementById('organizeTabsBtn');
   const tidyPinnedBtn = document.getElementById('tidyPinnedBtn');
@@ -55,9 +81,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Load saved settings
   const settings = await chrome.storage.local.get([
     'ignoreQuery', 'ignoreHash', 'reloadTabs',
-    'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider',
+    'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled',
     'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
-    'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting', 'organizeOnClick', 'pinnedUrls',
+    'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting', 'sortTabsWithinGroupsByTitle', 'organizeOnClick', 'pinnedUrls',
     'githubToken', 'prGroupEnabled', 'bookmarksGroupColor'
   ]);
   ignoreQueryCheckbox.checked = settings.ignoreQuery !== false; // default to true
@@ -75,9 +101,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     geminiKeyInput.value = settings.geminiKey;
   }
   aiProviderSelect.value = settings.aiProvider || 'openai';
-  openaiModelSelect.value = settings.openaiModel || 'gpt-5-mini';
-  claudeModelSelect.value = settings.claudeModel || 'claude-haiku-4-5-20251001';
-  geminiModelSelect.value = settings.geminiModel || 'gemini-2.0-flash';
+  aiFallbackEnabledCheckbox.checked = settings.aiFallbackEnabled !== false; // default to true
+  const openaiResolved = globalThis.populateModelSelect(openaiModelSelect, 'openai', settings.openaiModel);
+  const claudeResolved = globalThis.populateModelSelect(claudeModelSelect, 'claude', settings.claudeModel);
+  const geminiResolved = globalThis.populateModelSelect(geminiModelSelect, 'gemini', settings.geminiModel);
+  updateModelRecommendedHint('openai', openaiModelRecommendedEl, openaiModelSelect);
+  updateModelRecommendedHint('claude', claudeModelRecommendedEl, claudeModelSelect);
+  updateModelRecommendedHint('gemini', geminiModelRecommendedEl, geminiModelSelect);
+  if (
+    openaiResolved !== settings.openaiModel ||
+    claudeResolved !== settings.claudeModel ||
+    geminiResolved !== settings.geminiModel
+  ) {
+    chrome.storage.local.set({
+      openaiModel: openaiResolved,
+      claudeModel: claudeResolved,
+      geminiModel: geminiResolved,
+    });
+  }
   if (settings.customInstructionsOptions) {
     customInstructionsOptions.value = settings.customInstructionsOptions;
   }
@@ -87,6 +128,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   updatePreserveGroupsMinTabsVisibility();
   updatePreserveGroupsMinTabsWarning();
   mergeIntoExistingCheckbox.checked = settings.mergeIntoExisting === true;
+  sortTabsWithinGroupsByTitleCheckbox.checked = settings.sortTabsWithinGroupsByTitle === true;
   organizeOnClickCheckbox.checked = settings.organizeOnClick === true;
   if (settings.pinnedUrls && Array.isArray(settings.pinnedUrls)) {
     pinnedUrlsTextarea.value = settings.pinnedUrls.join('\n');
@@ -127,22 +169,45 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.storage.local.set({ geminiKey: geminiKeyInput.value.trim() });
   });
   
+  const PROVIDER_LABELS_OPTIONS = { openai: 'OpenAI', claude: 'Claude', gemini: 'Gemini' };
+  function updateFallbackHint() {
+    if (!aiFallbackHintEl) return;
+    const primary = aiProviderSelect.value || 'openai';
+    if (!aiFallbackEnabledCheckbox.checked) {
+      aiFallbackHintEl.textContent = `Fallback disabled — only ${PROVIDER_LABELS_OPTIONS[primary] || primary} will be used.`;
+      return;
+    }
+    const keys = {
+      openai: openaiKeyInput.value.trim(),
+      claude: claudeKeyInput.value.trim(),
+      gemini: geminiKeyInput.value.trim(),
+    };
+    const fallbacks = ['openai', 'claude', 'gemini']
+      .filter((p) => p !== primary && keys[p])
+      .map((p) => PROVIDER_LABELS_OPTIONS[p]);
+    if (fallbacks.length === 0) {
+      aiFallbackHintEl.textContent = `No fallback providers configured — add a Claude, OpenAI or Gemini API key above to enable automatic fallback.`;
+      return;
+    }
+    aiFallbackHintEl.textContent = `Fallback order: ${PROVIDER_LABELS_OPTIONS[primary] || primary} → ${fallbacks.join(' → ')}.`;
+  }
+
   aiProviderSelect.addEventListener('change', () => {
     chrome.storage.local.set({ aiProvider: aiProviderSelect.value });
+    updateFallbackHint();
   });
-  
-  openaiModelSelect.addEventListener('change', () => {
-    chrome.storage.local.set({ openaiModel: openaiModelSelect.value });
+
+  aiFallbackEnabledCheckbox.addEventListener('change', () => {
+    chrome.storage.local.set({ aiFallbackEnabled: aiFallbackEnabledCheckbox.checked });
+    updateFallbackHint();
   });
-  
-  claudeModelSelect.addEventListener('change', () => {
-    chrome.storage.local.set({ claudeModel: claudeModelSelect.value });
+
+  // Also refresh the hint when an API key changes (fallback list depends on which keys are present)
+  [openaiKeyInput, claudeKeyInput, geminiKeyInput].forEach((input) => {
+    input.addEventListener('input', updateFallbackHint);
   });
-  
-  geminiModelSelect.addEventListener('change', () => {
-    chrome.storage.local.set({ geminiModel: geminiModelSelect.value });
-  });
-  
+  updateFallbackHint();
+
   customInstructionsOptions.addEventListener('input', () => {
     chrome.storage.local.set({ customInstructionsOptions: customInstructionsOptions.value.trim() });
   });
@@ -182,6 +247,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   
   mergeIntoExistingCheckbox.addEventListener('change', () => {
     chrome.storage.local.set({ mergeIntoExisting: mergeIntoExistingCheckbox.checked });
+  });
+
+  sortTabsWithinGroupsByTitleCheckbox.addEventListener('change', () => {
+    chrome.storage.local.set({ sortTabsWithinGroupsByTitle: sortTabsWithinGroupsByTitleCheckbox.checked });
   });
   
   organizeOnClickCheckbox.addEventListener('change', () => {
@@ -303,7 +372,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
 
       if (result.success) {
-        actionStatus.textContent = `Organized ${result.groupedCount} tab(s) into ${result.groupCount} group(s).`;
+        let msg = `Organized ${result.groupedCount} tab(s) into ${result.groupCount} group(s).`;
+        if (result.fallbackInfo) {
+          msg += ` Used ${result.providerUsedLabel} after ${result.fallbackInfo.primaryFailedLabel} failed (${result.fallbackInfo.primaryFailedSummary}).`;
+        }
+        actionStatus.textContent = msg;
         actionStatus.className = 'status success';
       } else {
         actionStatus.textContent = result.error || 'An error occurred';

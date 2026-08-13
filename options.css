@@ -73,6 +73,12 @@ h1 {
   font-size: 16px;
 }
 
+.model-recommended-hint {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--accent);
+}
+
 .content {
   display: flex;
   flex-direction: column;
@@ -306,6 +312,7 @@ input:focus + .slider {
   min-height: 20px;
   line-height: 1.5;
   position: relative;
+  white-space: pre-line;
 }
 
 .status.success,
