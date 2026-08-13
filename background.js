@@ -35,6 +35,12 @@ function extractBracketedSlice(text, start) {
   return null;
 }
 
+/** Parse a min-group-size setting: any non-negative integer is valid (0 included), default 1. */
+function parseMinTabs(value) {
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) && n >= 0 ? n : 1;
+}
+
 function normalizeTabIndices(indices) {
   if (!Array.isArray(indices)) return [];
   return indices
@@ -333,11 +339,11 @@ chrome.runtime.onInstalled.addListener((details) => {
   updateBadge();
 });
 
-// Update badge when extension starts
-updateBadge();
-
 let isOrganizing = false;
 let loadingSpinnerInterval = null;
+
+// Update badge when extension starts
+updateBadge();
 
 // Circle quadrant spinner – visible, symmetrical, well-centered in badge
 const SPINNER_CHARS = ['◐', '◓', '◑', '◒'];
@@ -372,34 +378,34 @@ async function runOrganizeWithFeedback() {
   chrome.action.setTitle({ title: 'Organizing tabs...' });
   chrome.contextMenus.update('dedupe-and-organize', { enabled: false }).catch(() => {});
 
-  const settings = await chrome.storage.local.get([
-    'ignoreQuery', 'ignoreHash', 'reloadTabs',
-    'customInstructionsOptions', 'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting',
-    'githubToken', 'prGroupEnabled'
-  ]);
-  // Optionally refresh PR tab group first, then dedupe, then tidy pinned tabs, then organize with AI
-  if (settings.githubToken?.trim()) {
-    await syncPrTabGroup().catch(() => {});
-  }
-  const ignoreQuery = settings.ignoreQuery !== false;
-  const ignoreHash = settings.ignoreHash !== false;
-  const reloadTabs = settings.reloadTabs === true;
-  await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs);
-  await dedupeAndTidyPinned(ignoreQuery, ignoreHash);
-
-  const preserveGroups = settings.preserveGroups !== false;
-  const preserveGroupsMinTabs = Math.max(0, parseInt(settings.preserveGroupsMinTabs, 10) || 1);
-  const mergeIntoExisting = settings.mergeIntoExisting === true;
-  const customInstructions = settings.customInstructionsOptions || '';
-
-  chrome.notifications.create('organize-progress', {
-    type: 'basic',
-    iconUrl: chrome.runtime.getURL('icons/icon128.png'),
-    title: 'Organizing tabs',
-    message: 'AI is organizing your tabs...'
-  });
-
   try {
+    const settings = await chrome.storage.local.get([
+      'ignoreQuery', 'ignoreHash', 'reloadTabs',
+      'customInstructionsOptions', 'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting',
+      'githubToken', 'prGroupEnabled'
+    ]);
+    // Optionally refresh PR tab group first, then dedupe, then tidy pinned tabs, then organize with AI
+    if (settings.prGroupEnabled === true && settings.githubToken?.trim()) {
+      await syncPrTabGroup().catch(() => {});
+    }
+    const ignoreQuery = settings.ignoreQuery !== false;
+    const ignoreHash = settings.ignoreHash !== false;
+    const reloadTabs = settings.reloadTabs === true;
+    await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs);
+    await dedupeAndTidyPinned(ignoreQuery, ignoreHash);
+
+    const preserveGroups = settings.preserveGroups !== false;
+    const preserveGroupsMinTabs = parseMinTabs(settings.preserveGroupsMinTabs);
+    const mergeIntoExisting = settings.mergeIntoExisting === true;
+    const customInstructions = settings.customInstructionsOptions || '';
+
+    chrome.notifications.create('organize-progress', {
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+      title: 'Organizing tabs',
+      message: 'AI is organizing your tabs...'
+    });
+
     const result = await organizeTabs(preserveGroups, mergeIntoExisting, customInstructions, preserveGroupsMinTabs);
     chrome.notifications.clear('organize-progress');
     if (!result.success) {
@@ -455,7 +461,7 @@ async function runDedupeAndTidyPinned() {
       'ignoreQuery', 'ignoreHash', 'reloadTabs',
       'githubToken', 'prGroupEnabled'
     ]);
-    if (settings.githubToken?.trim()) {
+    if (settings.prGroupEnabled === true && settings.githubToken?.trim()) {
       await syncPrTabGroup().catch(() => {});
     }
     const ignoreQuery = settings.ignoreQuery !== false;
@@ -492,9 +498,15 @@ async function runDedupeAndTidyPinned() {
 }
 
 // Handle extension icon left click - dedupe then tidy pinned tabs
+// (or the full dedupe + AI organize flow when "Organize tabs on click" is enabled)
 chrome.action.onClicked.addListener(async () => {
   try {
-    await runDedupeAndTidyPinned();
+    const { organizeOnClick } = await chrome.storage.local.get(['organizeOnClick']);
+    if (organizeOnClick === true) {
+      await runOrganizeWithFeedback();
+    } else {
+      await runDedupeAndTidyPinned();
+    }
   } catch (error) {
     console.error('Error on extension icon click:', error);
   }
@@ -599,8 +611,10 @@ async function countDuplicates() {
 
 // Update the badge text and context menu enabled state
 async function updateBadge() {
+  if (isOrganizing) return; // the progress spinner owns the badge while organizing
   const duplicateCount = await countDuplicates();
-  
+  if (isOrganizing) return;
+
   if (duplicateCount > 0) {
     chrome.action.setBadgeText({ text: duplicateCount.toString() });
     chrome.action.setBadgeBackgroundColor({ color: '#FF4444' });
@@ -609,27 +623,28 @@ async function updateBadge() {
   }
 }
 
+// Tab events fire in bursts (onUpdated fires several times per page load) and each
+// badge update queries every tab, so coalesce them.
+let updateBadgeTimer = null;
+function scheduleBadgeUpdate() {
+  if (updateBadgeTimer) clearTimeout(updateBadgeTimer);
+  updateBadgeTimer = setTimeout(() => {
+    updateBadgeTimer = null;
+    updateBadge();
+  }, 300);
+}
+
 // Update badge when tabs are created, updated, or removed
-chrome.tabs.onCreated.addListener(() => {
-  updateBadge();
-});
+chrome.tabs.onCreated.addListener(scheduleBadgeUpdate);
 
-chrome.tabs.onUpdated.addListener(() => {
-  updateBadge();
-});
+chrome.tabs.onUpdated.addListener(scheduleBadgeUpdate);
 
-chrome.tabs.onRemoved.addListener(() => {
-  updateBadge();
-});
+chrome.tabs.onRemoved.addListener(scheduleBadgeUpdate);
 
-chrome.tabs.onActivated.addListener(() => {
-  updateBadge();
-});
+chrome.tabs.onActivated.addListener(scheduleBadgeUpdate);
 
 // Also update badge when window focus changes (user switches windows)
-chrome.windows.onFocusChanged.addListener(() => {
-  updateBadge();
-});
+chrome.windows.onFocusChanged.addListener(scheduleBadgeUpdate);
 
 // Check if URL is valid and processable
 function isValidUrl(url) {
@@ -828,13 +843,22 @@ function compareTabsByRecency(tab1, tab2, ignoreHash) {
 
   if (num1 > num2) return -1;
   if (num2 > num1) return 1;
-  return tab2.lastAccessed - tab1.lastAccessed;
+  return (tab2.lastAccessed || 0) - (tab1.lastAccessed || 0);
 }
 
-// Split view > PR group > highest anchor / most recent
+/** Prefer keeping pinned tabs over unpinned duplicates. */
+function comparePinnedPreference(tab1, tab2) {
+  if (tab1.pinned && !tab2.pinned) return -1;
+  if (!tab1.pinned && tab2.pinned) return 1;
+  return 0;
+}
+
+// Split view > pinned > PR group > highest anchor / most recent
 function compareTabsWithPrGroup(tab1, tab2, ignoreHash, prGroupId) {
   const splitPref = compareSplitViewPreference(tab1, tab2);
   if (splitPref !== 0) return splitPref;
+  const pinnedPref = comparePinnedPreference(tab1, tab2);
+  if (pinnedPref !== 0) return pinnedPref;
   if (prGroupId != null) {
     const t1InPr = tab1.groupId === prGroupId;
     const t2InPr = tab2.groupId === prGroupId;
@@ -1281,7 +1305,9 @@ async function fetchOpenPrUrls(githubToken) {
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         if (res.status === 403 && /rate limit/i.test(err.message || '')) return { rateLimited: true };
-        return {};
+        // A failed search must abort the sync: an empty result here would be
+        // indistinguishable from "no open PRs" and the PR group would be cleared.
+        return { error: err.message || `GitHub search error: ${res.status}` };
       }
       const data = await res.json();
       if (!Array.isArray(data.items)) return {};
@@ -1299,8 +1325,10 @@ async function fetchOpenPrUrls(githubToken) {
     const reviewQ = `is:pr is:open review-requested:${login}`;
     let err1 = await addFromSearch(authorQ);
     if (err1.rateLimited) return { prUrls: [], error: 'GitHub rate limit exceeded' };
+    if (err1.error) return { prUrls: [], error: err1.error };
     let err2 = await addFromSearch(reviewQ);
     if (err2.rateLimited) return { prUrls: [], error: 'GitHub rate limit exceeded' };
+    if (err2.error) return { prUrls: [], error: err2.error };
 
     return { prUrls: Array.from(prUrls) };
   } catch (e) {
@@ -1361,7 +1389,7 @@ async function syncPrTabGroup(windowId) {
     prGroupId = prGroup.id;
     const inPr = await chrome.tabs.query({ groupId: prGroup.id });
     for (const tab of inPr) {
-      const u = tab.url || '';
+      const u = tab.pendingUrl || tab.url || '';
       if (!isValidUrl(u)) continue;
       const norm = normalizedPrUrl(u, ignoreQuery, ignoreHash);
       if (norm && targetNorm.has(norm)) inPrGroupByNorm.set(norm, tab);
@@ -1415,11 +1443,14 @@ async function syncPrTabGroup(windowId) {
     usedTabIds.add(newTab.id);
   }
 
-  // Remove from PR group any tabs that are no longer in prUrls
+  // Remove from PR group any tabs that are no longer in prUrls. Tabs placed there by
+  // this sync are always kept: a freshly created tab may not have loaded yet, leaving
+  // its url empty (only pendingUrl set), and must not be treated as a non-PR tab.
   if (prGroupId != null) {
     const inPr = await chrome.tabs.query({ groupId: prGroupId });
     for (const tab of inPr) {
-      const norm = normalizedPrUrl(tab.url || '', ignoreQuery, ignoreHash);
+      if (usedTabIds.has(tab.id)) continue;
+      const norm = normalizedPrUrl(tab.pendingUrl || tab.url || '', ignoreQuery, ignoreHash);
       if (!norm || !targetNorm.has(norm)) {
         await chrome.tabs.remove(tab.id);
       }
@@ -2142,7 +2173,7 @@ async function buildProviderChain(settings) {
 
 async function organizeTabs(preserveGroups, mergeIntoExisting, customInstructions, preserveGroupsMinTabs = 1) {
   try {
-    const minTabs = Math.max(0, parseInt(preserveGroupsMinTabs, 10) || 1);
+    const minTabs = parseMinTabs(preserveGroupsMinTabs);
 
     // Get AI settings
     const settings = await chrome.storage.local.get([
@@ -2611,8 +2642,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   
   if (request.action === 'organizeTabs') {
-    const preserveGroupsMinTabs = Math.max(0, parseInt(request.preserveGroupsMinTabs, 10) || 1);
-    organizeTabs(request.preserveGroups, request.mergeIntoExisting || false, request.customInstructions, preserveGroupsMinTabs)
+    (async () => {
+      // The popup doesn't send preserveGroupsMinTabs; fall back to the saved setting
+      // instead of silently using 1.
+      let minTabsRaw = request.preserveGroupsMinTabs;
+      if (minTabsRaw === undefined) {
+        minTabsRaw = (await chrome.storage.local.get(['preserveGroupsMinTabs'])).preserveGroupsMinTabs;
+      }
+      return organizeTabs(request.preserveGroups, request.mergeIntoExisting || false, request.customInstructions, parseMinTabs(minTabsRaw));
+    })()
       .then(result => sendResponse(result))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true; // Keep the message channel open for async response

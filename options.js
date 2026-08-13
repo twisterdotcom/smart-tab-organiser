@@ -509,7 +509,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   preserveGroupsMinTabsInput.addEventListener('change', () => {
-    const n = Math.max(0, parseInt(preserveGroupsMinTabsInput.value, 10) || 1);
+    const parsed = parseInt(preserveGroupsMinTabsInput.value, 10);
+    const n = Number.isFinite(parsed) && parsed >= 0 ? parsed : 1;
     preserveGroupsMinTabsInput.value = n;
     chrome.storage.local.set({ preserveGroupsMinTabs: n });
     updatePreserveGroupsMinTabsWarning();
@@ -629,7 +630,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     try {
       const preserveGroups = preserveGroupsCheckbox.checked;
-      const preserveGroupsMinTabs = Math.max(0, parseInt(preserveGroupsMinTabsInput.value, 10) || 1);
+      const minTabsParsed = parseInt(preserveGroupsMinTabsInput.value, 10);
+      const preserveGroupsMinTabs = Number.isFinite(minTabsParsed) && minTabsParsed >= 0 ? minTabsParsed : 1;
       const mergeIntoExisting = mergeIntoExistingCheckbox.checked;
       const customInstructions = customInstructionsOptions.value.trim();
 
