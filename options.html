@@ -120,14 +120,14 @@
       </section>
 
       <section class="settings-section">
-        <h2>GitHub PR tab group</h2>
-        <p class="section-description">When enabled, the extension maintains a tab group named <strong>PRs</strong> with one tab per open pull request (authored by you or awaiting your review). Only the extension adds or removes tabs in this group. Your token is stored locally and used only to call the GitHub API.</p>
+        <h2>GitHub tab groups</h2>
+        <p class="section-description">These optional features use your GitHub token to maintain tab groups. The token stays in local storage and goes only to the GitHub API.</p>
 
         <div class="setting-item">
           <div class="setting-info">
             <label class="setting-label" for="githubToken">GitHub personal access token</label>
             <p class="setting-description">
-              Used only to fetch your open PRs and PRs awaiting your review. Requires at least <code>read:user</code>; for private repos use <code>repo</code>.
+              Used to fetch open pull requests and read issue states. The PR feature requires <code>read:user</code>. Private repositories also require suitable repository access.
               <br><strong>Create a token:</strong> <a href="https://github.com/settings/tokens?type=beta" target="_blank">github.com/settings/tokens</a>
             </p>
           </div>
@@ -141,7 +141,7 @@
           <div class="setting-info">
             <label class="setting-label">Enable PR tab group</label>
             <p class="setting-description">
-              When enabled, a tab group named <strong>PRs</strong> is created or updated with one tab per open PR. When you run dedupe/organize, the extension refreshes this group first and treats the tab in the PR group as the main copy when closing duplicates elsewhere (split-view tabs are still never closed).
+              When enabled, the extension maintains a <strong>PRs</strong> group for your open pull requests and review requests. Each dedupe or organize action refreshes this group first. Duplicate removal keeps the copy in <strong>PRs</strong>. Split-view tabs remain unchanged.
             </p>
           </div>
           <label class="switch">
@@ -152,7 +152,25 @@
 
         <div class="setting-item">
           <button id="refreshPrGroupBtn" class="btn btn-secondary">Refresh PR group</button>
-          <p class="setting-description" style="margin-top: 0.5em;">Manually refresh the PRs tab group now. It also refreshes automatically when you run dedupe/organize.</p>
+          <p class="setting-description" style="margin-top: 0.5em;">Refresh the <strong>PRs</strong> group now. Dedupe and organize actions also refresh it when the feature is enabled.</p>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="closedIssueGroupEnabled">Move closed issues to a Closed group</label>
+            <p class="setting-description">
+              When enabled, each dedupe or organize action checks GitHub issue tabs in the current window. The extension moves closed issues from any group, or no group, into <strong>Closed</strong>. Pinned and split-view tabs remain unchanged.
+            </p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="closedIssueGroupEnabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-item">
+          <button id="refreshClosedIssueGroupBtn" class="btn btn-secondary">Refresh Closed group</button>
+          <p class="setting-description" style="margin-top: 0.5em;">Check the GitHub issue tabs in the current window now.</p>
         </div>
       </section>
       

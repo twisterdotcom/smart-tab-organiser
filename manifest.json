@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Smart Tab Organiser",
-  "version": "1.1.0",
-  "description": "Dedupe tabs, tidy pinned URL lists, GitHub PR groups, and AI tab organisation. Runs fully on-device, or with your own cloud API keys.",
+  "version": "1.2.0",
+  "description": "Dedupe tabs, tidy pinned URL lists, manage GitHub tab groups, and organize tabs with AI or your own API keys.",
   "permissions": [
     "tabs",
     "storage",

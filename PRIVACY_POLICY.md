@@ -1,10 +1,10 @@
 # Privacy Policy for Smart Tab Organiser
 
-**Last Updated:** August 12, 2026
+**Last Updated:** August 19, 2026
 
 ## Overview
 
-Smart Tab Organiser is a browser extension that helps you deduplicate tabs, tidy pinned tab lists, optionally manage a GitHub pull-request tab group, and optionally organise tabs with AI. This privacy policy explains how we handle your data.
+Smart Tab Organiser deduplicates tabs, tidies pinned tab lists, manages optional GitHub tab groups, and organizes tabs with AI. This privacy policy explains how the extension handles your data.
 
 ## Data Collection and Storage
 
@@ -12,12 +12,12 @@ Smart Tab Organiser is a browser extension that helps you deduplicate tabs, tidy
 This extension stores preferences and optional secrets (API keys, GitHub tokens) on your device using Chrome's `chrome.storage.local` API. **We do not operate a server** for this extension; there is no account or backend run by the developer that receives your browsing data.
 
 ### What data is stored
-- **User preferences**: Options such as ignore query parameters, ignore hash, reload-after-dedupe, pinned URL lists, PR group settings, etc.
+- **User preferences**: Settings for URL comparison, tab reloads, pinned URL lists, GitHub tab groups, and AI organization.
 - **Optional secrets**: If you enable them, API keys (OpenAI, Claude, Gemini) and/or a GitHub personal access token are stored **only** on your device.
 
 ### How data is used
 - Settings are read locally to control how the extension behaves.
-- **Core deduplication and pinned-tab tidy** can run without sending tab data to any third party, as long as you do not use AI or GitHub-powered features.
+- **Core deduplication and pinned-tab tidy** send no tab data to a third party when GitHub and cloud AI features are disabled.
 - **No analytics, tracking, or telemetry** from the extension author is collected.
 
 ### Tab data and network requests
@@ -38,8 +38,8 @@ This extension stores preferences and optional secrets (API keys, GitHub tokens)
 - **Data Storage**: All data remains on your device
 
 ### `tabGroups` Permission
-- **Purpose**: Required to create and manage tab groups when using AI organization
-- **Usage**: Creates tab groups based on AI categorization
+- **Purpose**: Required to create and manage tab groups for AI and GitHub features
+- **Usage**: Creates AI groups and the optional GitHub groups in the current window
 - **Data Access**: Only accesses tabs in the current browser window
 
 ### `notifications` Permission
@@ -80,9 +80,11 @@ No API key is required for either option, and neither sends anything to the exte
 
 ### GitHub API (optional)
 
-If you configure a **GitHub personal access token** and use the pull-request tab group (or related) features, the extension contacts **api.github.com** using **your** token to search for pull requests and build/update tabs. **What is sent**: HTTP requests authorised by your token (for example, user identity and search queries for open PRs as implemented in the extension). **What is not sent to us**: Nothing is sent to the extension author; requests go from your browser to GitHub only.
+If you enable a GitHub tab group, the extension contacts **api.github.com** with your token. The **PRs** feature sends user and search requests. The **Closed** feature sends the repository name and issue number from each GitHub issue tab.
 
-You can opt out by removing the token and disabling PR-related options.
+GitHub returns the current issue state. The extension uses this state to move closed issue tabs into the **Closed** group.
+
+The extension sends no GitHub data to the extension author. Disable the GitHub settings and remove the token to stop these requests.
 
 ## Data Security
 

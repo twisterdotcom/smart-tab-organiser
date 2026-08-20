@@ -1,6 +1,6 @@
 # Smart Tab Organiser
 
-A Chrome extension that **deduplicates tabs** (including smart rules for hashes/anchors), **tidies pinned tab lists**, optionally maintains a **GitHub pull-request tab group**, and **organises tabs with AI** into groups. Duplicate handling can keep the tab with the highest anchor number (for example, the latest GitHub comment on an issue).
+A Chrome extension that **deduplicates tabs**, **tidies pinned tab lists**, maintains optional **GitHub tab groups**, and **organizes tabs with AI**. Duplicate handling can keep the tab with the highest anchor number, such as the latest GitHub issue comment.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-coming%20soon-lightgrey)](https://chrome.google.com/webstore)
@@ -10,7 +10,7 @@ A Chrome extension that **deduplicates tabs** (including smart rules for hashes/
 - **Local by default**: Settings and optional API tokens stay on your device (`chrome.storage.local`).
 - **No analytics**: No telemetry or tracking from this extension.
 - **Fully offline AI available**: Choosing Chrome built-in AI or a local model means tab titles and URLs never leave your computer.
-- **Optional cloud features**: AI organisation and the PR tab group send data only when you configure keys and use those features—see [Privacy Policy](PRIVACY_POLICY.md).
+- **Optional cloud features**: Cloud AI and GitHub tab groups send data only after you configure a key and use the applicable feature.
 - [Privacy Policy](PRIVACY_POLICY.md)
 
 ## Key features
@@ -18,7 +18,7 @@ A Chrome extension that **deduplicates tabs** (including smart rules for hashes/
 - **AI tab organisation**: Group tabs with a cloud provider (OpenAI, Anthropic Claude, Google Gemini — you supply API keys in Options) or **entirely on-device** with Chrome's built-in Gemini Nano or a local Ollama / LM Studio / llama.cpp model.
 - **Duplicate detection**: Same base URL with different anchors/hashes; optional ignore-query / ignore-hash rules; case-insensitive matching.
 - **Pinned URL list**: Pin, unpin, and order tabs to match a list you define (runs with the toolbar action or combined flows).
-- **GitHub PR tab group** (optional): Uses your GitHub token to open/update a group of PR tabs; integrates with dedupe logic when enabled.
+- **GitHub tab groups** (optional): Maintains a **PRs** group for open pull requests. It can also move tabs for closed issues into **Closed**.
 - **Toolbar, context menu, and shortcut**: Left-click the icon, use the right-click menus, or **⌘+Shift+O** (Mac) / **Ctrl+Shift+O** (Windows/Linux) for the organise command (see `manifest.json` → `commands`).
 - **Popup**: Close duplicates only, reload all tabs, AI organise, and related toggles.
 
@@ -69,7 +69,7 @@ The extension can treat these as one logical page, keep the tab with the **highe
 
 ```
 ├── manifest.json          # Extension config and permissions
-├── background.js          # Service worker (dedupe, pin tidy, AI, PR group)
+├── background.js          # Service worker (dedupe, pin tidy, AI, GitHub groups)
 ├── popup.html/css/js      # Toolbar popup
 ├── options.html/css/js    # Full settings (API keys, lists, PRs, AI)
 ├── icons/                 # 16, 48, 128
@@ -84,7 +84,7 @@ The extension can treat these as one logical page, keep the tab with the **highe
 - **Google Chrome**, **Microsoft Edge**, or another **Chromium** browser with unpacked extensions.
 - For **cloud AI organisation**: an API key from OpenAI, Anthropic, and/or Google (configured in **Extension options** after install).
 - For **on-device AI organisation**: either Chrome 138+ on supported hardware (built-in Gemini Nano), or a local OpenAI-compatible server such as [Ollama](https://ollama.com) — no API key needed. See [On-device AI](#on-device-ai-no-api-key-no-network).
-- For the **GitHub PR group**: a GitHub personal access token with appropriate repo scope (configured in Options).
+- For **GitHub tab groups**: a GitHub personal access token with access to the applicable repositories.
 
 ### Steps
 
@@ -109,7 +109,7 @@ The extension can treat these as one logical page, keep the tab with the **highe
 ### First-time setup
 
 1. Right-click the extension icon → **Options** (or open Options from the extensions list).
-2. Set **dedupe / pin** preferences and any **pinned URL list** or **PR group** options you want.
+2. Set the **dedupe**, **pinned tab**, and **GitHub tab group** options that you want.
 3. Under AI settings, choose a **provider**. Paste **API keys** only if you picked a cloud provider; the on-device options need no key.
 4. Reload the extension after code changes: on `chrome://extensions` / `edge://extensions`, click **Reload** on the extension card.
 

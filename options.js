@@ -69,8 +69,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const ungroupTabsBtn = document.getElementById('ungroupTabsBtn');
   const pinnedUrlsTextarea = document.getElementById('pinnedUrls');
   const refreshPrGroupBtn = document.getElementById('refreshPrGroupBtn');
+  const refreshClosedIssueGroupBtn = document.getElementById('refreshClosedIssueGroupBtn');
   const githubTokenInput = document.getElementById('githubToken');
   const prGroupEnabledCheckbox = document.getElementById('prGroupEnabled');
+  const closedIssueGroupEnabledCheckbox = document.getElementById('closedIssueGroupEnabled');
   const bookmarksGroupColorSelect = document.getElementById('bookmarksGroupColor');
 
   // Show/hide password for API key inputs
@@ -96,7 +98,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled', 'aiAllowCloudFallback',
     'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
     'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting', 'sortTabsWithinGroupsByTitle', 'organizeOnClick', 'pinnedUrls',
-    'githubToken', 'prGroupEnabled', 'bookmarksGroupColor', 'localBaseUrl', 'localModel'
+    'githubToken', 'prGroupEnabled', 'closedIssueGroupEnabled', 'bookmarksGroupColor', 'localBaseUrl', 'localModel'
   ]);
   ignoreQueryCheckbox.checked = settings.ignoreQuery !== false; // default to true
   ignoreHashCheckbox.checked = settings.ignoreHash !== false; // default to true
@@ -154,6 +156,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     githubTokenInput.value = settings.githubToken;
   }
   prGroupEnabledCheckbox.checked = settings.prGroupEnabled === true;
+  closedIssueGroupEnabledCheckbox.checked = settings.closedIssueGroupEnabled === true;
   bookmarksGroupColorSelect.value = settings.bookmarksGroupColor || 'yellow';
 
   // Save settings when changed
@@ -543,6 +546,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   prGroupEnabledCheckbox.addEventListener('change', () => {
     chrome.storage.local.set({ prGroupEnabled: prGroupEnabledCheckbox.checked });
   });
+  closedIssueGroupEnabledCheckbox.addEventListener('change', () => {
+    chrome.storage.local.set({ closedIssueGroupEnabled: closedIssueGroupEnabledCheckbox.checked });
+  });
 
   // Refresh PR group button
   refreshPrGroupBtn.addEventListener('click', async () => {
@@ -563,6 +569,27 @@ document.addEventListener('DOMContentLoaded', async () => {
       actionStatus.className = 'status error';
     } finally {
       refreshPrGroupBtn.disabled = false;
+    }
+  });
+
+  refreshClosedIssueGroupBtn.addEventListener('click', async () => {
+    refreshClosedIssueGroupBtn.disabled = true;
+    actionStatus.textContent = 'Checking GitHub issue tabs...';
+    actionStatus.className = 'status info';
+    try {
+      const result = await chrome.runtime.sendMessage({ action: 'syncClosedIssueTabGroup' });
+      if (result.success) {
+        actionStatus.textContent = result.message || 'Closed group refreshed.';
+        actionStatus.className = result.warning ? 'status info' : 'status success';
+      } else {
+        actionStatus.textContent = result.error || 'Failed to refresh Closed group';
+        actionStatus.className = 'status error';
+      }
+    } catch (error) {
+      actionStatus.textContent = 'Error: ' + error.message;
+      actionStatus.className = 'status error';
+    } finally {
+      refreshClosedIssueGroupBtn.disabled = false;
     }
   });
 

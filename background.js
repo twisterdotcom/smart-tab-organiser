@@ -3,6 +3,11 @@ importScripts('ai-models.js');
 
 console.log('Smart Tab Organiser extension background service worker loaded');
 
+const PR_GROUP_TITLE = 'PRs';
+const CLOSED_GROUP_TITLE = 'Closed';
+const ALWAYS_PRESERVED_GROUP_NAMES = ['BOOKMARKS', 'PRS'];
+const GITHUB_API_VERSION = '2022-11-28';
+
 /** Extract a complete bracketed slice starting at `start` (handles strings/escapes). */
 function extractBracketedSlice(text, start) {
   if (start < 0 || start >= text.length || text[start] !== '[') return null;
@@ -33,6 +38,23 @@ function extractBracketedSlice(text, start) {
     }
   }
   return null;
+}
+
+async function resolveTargetWindowId(windowId) {
+  if (Number.isInteger(windowId) && windowId >= 0) return windowId;
+  return (await chrome.windows.getCurrent()).id;
+}
+
+function tabQueryForWindow(windowId) {
+  return Number.isInteger(windowId) && windowId >= 0
+    ? { windowId }
+    : { currentWindow: true };
+}
+
+function getAlwaysPreservedGroupNames(closedIssueGroupEnabled) {
+  const names = new Set(ALWAYS_PRESERVED_GROUP_NAMES);
+  if (closedIssueGroupEnabled === true) names.add(CLOSED_GROUP_TITLE.toUpperCase());
+  return names;
 }
 
 /** Parse a min-group-size setting: any non-negative integer is valid (0 included), default 1. */
@@ -369,7 +391,7 @@ function stopLoadingSpinner() {
 }
 
 // Run organize with badge + notification feedback (for icon/context menu/command)
-async function runOrganizeWithFeedback() {
+async function runOrganizeWithFeedback(windowId) {
   if (isOrganizing) return;
   isOrganizing = true;
 
@@ -379,20 +401,18 @@ async function runOrganizeWithFeedback() {
   chrome.contextMenus.update('dedupe-and-organize', { enabled: false }).catch(() => {});
 
   try {
+    const targetWindowId = await resolveTargetWindowId(windowId);
     const settings = await chrome.storage.local.get([
       'ignoreQuery', 'ignoreHash', 'reloadTabs',
-      'customInstructionsOptions', 'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting',
-      'githubToken', 'prGroupEnabled'
+      'customInstructionsOptions', 'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting'
     ]);
-    // Optionally refresh PR tab group first, then dedupe, then tidy pinned tabs, then organize with AI
-    if (settings.prGroupEnabled === true && settings.githubToken?.trim()) {
-      await syncPrTabGroup().catch(() => {});
-    }
+    // Refresh enabled GitHub groups first, then dedupe, tidy pinned tabs, and organize with AI.
+    await syncEnabledGitHubTabGroups(targetWindowId).catch(() => {});
     const ignoreQuery = settings.ignoreQuery !== false;
     const ignoreHash = settings.ignoreHash !== false;
     const reloadTabs = settings.reloadTabs === true;
-    await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs);
-    await dedupeAndTidyPinned(ignoreQuery, ignoreHash);
+    await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, targetWindowId);
+    await dedupeAndTidyPinned(ignoreQuery, ignoreHash, targetWindowId);
 
     const preserveGroups = settings.preserveGroups !== false;
     const preserveGroupsMinTabs = parseMinTabs(settings.preserveGroupsMinTabs);
@@ -406,7 +426,7 @@ async function runOrganizeWithFeedback() {
       message: 'AI is organizing your tabs...'
     });
 
-    const result = await organizeTabs(preserveGroups, mergeIntoExisting, customInstructions, preserveGroupsMinTabs);
+    const result = await organizeTabs(preserveGroups, mergeIntoExisting, customInstructions, preserveGroupsMinTabs, targetWindowId);
     chrome.notifications.clear('organize-progress');
     if (!result.success) {
       const failures = result.failures || [];
@@ -455,20 +475,18 @@ async function runOrganizeWithFeedback() {
 }
 
 // Deduplicate then tidy pinned tabs (unpin non-matching, pin & order matching)
-async function runDedupeAndTidyPinned() {
+async function runDedupeAndTidyPinned(windowId) {
   try {
+    const targetWindowId = await resolveTargetWindowId(windowId);
     const settings = await chrome.storage.local.get([
-      'ignoreQuery', 'ignoreHash', 'reloadTabs',
-      'githubToken', 'prGroupEnabled'
+      'ignoreQuery', 'ignoreHash', 'reloadTabs'
     ]);
-    if (settings.prGroupEnabled === true && settings.githubToken?.trim()) {
-      await syncPrTabGroup().catch(() => {});
-    }
+    await syncEnabledGitHubTabGroups(targetWindowId).catch(() => {});
     const ignoreQuery = settings.ignoreQuery !== false;
     const ignoreHash = settings.ignoreHash !== false;
     const reloadTabs = settings.reloadTabs === true;
-    await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs);
-    const result = await dedupeAndTidyPinned(ignoreQuery, ignoreHash);
+    await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, targetWindowId);
+    const result = await dedupeAndTidyPinned(ignoreQuery, ignoreHash, targetWindowId);
     if (result.success) {
       chrome.notifications.create({
         type: 'basic',
@@ -499,13 +517,13 @@ async function runDedupeAndTidyPinned() {
 
 // Handle extension icon left click - dedupe then tidy pinned tabs
 // (or the full dedupe + AI organize flow when "Organize tabs on click" is enabled)
-chrome.action.onClicked.addListener(async () => {
+chrome.action.onClicked.addListener(async (tab) => {
   try {
     const { organizeOnClick } = await chrome.storage.local.get(['organizeOnClick']);
     if (organizeOnClick === true) {
-      await runOrganizeWithFeedback();
+      await runOrganizeWithFeedback(tab?.windowId);
     } else {
-      await runDedupeAndTidyPinned();
+      await runDedupeAndTidyPinned(tab?.windowId);
     }
   } catch (error) {
     console.error('Error on extension icon click:', error);
@@ -535,9 +553,9 @@ async function expandAllTabGroups() {
   }
 }
 
-chrome.contextMenus.onClicked.addListener((info) => {
+chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === 'dedupe-and-organize') {
-    runOrganizeWithFeedback();
+    runOrganizeWithFeedback(tab?.windowId);
   } else if (info.menuItemId === 'edit-prompt') {
     chrome.tabs.create({ url: chrome.runtime.getURL('options.html#custom-instructions') });
   } else if (info.menuItemId === 'collapse-all-groups') {
@@ -708,8 +726,8 @@ function isOrganizableHttpTab(tab) {
     url.startsWith('http');
 }
 
-async function getOrganizableTabsInCurrentWindow() {
-  const tabs = await getAllTabsWithUrls();
+async function getOrganizableTabs(windowId) {
+  const tabs = await getAllTabsWithUrls(windowId);
   return tabs.filter(isOrganizableHttpTab);
 }
 
@@ -728,9 +746,34 @@ async function filterExistingTabIds(tabIds) {
   return existing.filter((id) => id !== null);
 }
 
+/** Keep only tabs that still match the snapshot sent to the AI provider. */
+async function filterUnchangedTabIds(tabIds, snapshotsById, windowId) {
+  const unchanged = await Promise.all(
+    tabIds.map(async (id) => {
+      const snapshot = snapshotsById.get(id);
+      if (!snapshot) return null;
+
+      try {
+        const tab = await chrome.tabs.get(id);
+        const currentUrl = tab.url || '';
+        const snapshotUrl = snapshot.url || '';
+        const snapshotWasNavigating = snapshot.pendingUrl && snapshot.pendingUrl !== snapshotUrl;
+        const tabIsNavigating = tab.pendingUrl && tab.pendingUrl !== currentUrl;
+        if (snapshotWasNavigating || tabIsNavigating) return null;
+        if (tab.windowId !== windowId || tab.pinned || isInSplitView(tab)) return null;
+        if (tab.groupId !== snapshot.groupId || currentUrl !== snapshotUrl) return null;
+        return id;
+      } catch (error) {
+        return isStaleTabError(error) ? null : Promise.reject(error);
+      }
+    })
+  );
+  return unchanged.filter((id) => id !== null);
+}
+
 // Get all tabs with their URLs loaded (handles suspended tabs)
-async function getAllTabsWithUrls() {
-  const tabs = await chrome.tabs.query({ currentWindow: true });
+async function getAllTabsWithUrls(windowId) {
+  const tabs = await chrome.tabs.query(tabQueryForWindow(windowId));
   
   // For tabs without URLs, try to load them
   // This is especially important for Arc browser which suspends inactive tabs
@@ -888,10 +931,10 @@ async function refreshTabsForDedupe(tabs) {
 }
 
 // Close duplicate tabs
-async function closeDuplicates(ignoreQuery, ignoreHash, reloadTabs) {
+async function closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, windowId) {
   try {
-    // Get all tabs in the current window with URLs loaded (handles suspended tabs)
-    let tabs = await getAllTabsWithUrls();
+    // Get all tabs in the target window with URLs loaded (handles suspended tabs)
+    let tabs = await getAllTabsWithUrls(windowId);
     tabs = await refreshTabsForDedupe(tabs);
 
     if (tabs.length <= 1) {
@@ -1146,19 +1189,19 @@ async function getRawPinnedUrlForNormalized(normalizedPattern, ignoreQuery, igno
 }
 
 // Deduplicate then tidy pinned tabs: unpin tabs not in the pinned URL list, pin & order matching ones.
-async function dedupeAndTidyPinned(ignoreQuery, ignoreHash) {
+async function dedupeAndTidyPinned(ignoreQuery, ignoreHash, windowId) {
   try {
-    const tabs = await chrome.tabs.query({ currentWindow: true });
+    const tabs = await chrome.tabs.query(tabQueryForWindow(windowId));
     if (!tabs.length) {
       return { success: false, error: 'No tabs in window' };
     }
-    const windowId = tabs[0].windowId;
+    const targetWindowId = tabs[0].windowId;
     const { entries, exactSet, prefixPatterns } = await getPinnedUrlSetAndOrder(ignoreQuery, ignoreHash);
 
     // Apply BOOKMARKS group colour if that group exists
     const colorSettings = await chrome.storage.local.get(['bookmarksGroupColor']);
     const bookmarksColor = colorSettings.bookmarksGroupColor || 'yellow';
-    const groups = await chrome.tabGroups.query({ windowId });
+    const groups = await chrome.tabGroups.query({ windowId: targetWindowId });
     const bookmarksGroup = groups.find(g => (g.title || '').trim().toUpperCase() === 'BOOKMARKS');
     if (bookmarksGroup) {
       await chrome.tabGroups.update(bookmarksGroup.id, { color: bookmarksColor });
@@ -1176,7 +1219,7 @@ async function dedupeAndTidyPinned(ignoreQuery, ignoreHash) {
 
     // If no tabs are currently pinned, ensure they exist from the list
     if (currentlyPinned.length === 0) {
-      const result = await ensurePinnedTabsExist(windowId, ignoreQuery, ignoreHash);
+      const result = await ensurePinnedTabsExist(targetWindowId, ignoreQuery, ignoreHash);
       if (result.pinned) {
         return { success: true, message: 'Pinned tabs created from your list.' };
       }
@@ -1209,7 +1252,7 @@ async function dedupeAndTidyPinned(ignoreQuery, ignoreHash) {
     }
 
     // Pin any unpinned tabs that match the list
-    const allTabsNow = await chrome.tabs.query({ windowId });
+    const allTabsNow = await chrome.tabs.query({ windowId: targetWindowId });
     const tabsWithUrls = (await Promise.all(
       allTabsNow.map(async (tab) => {
         const url = await ensureTabUrl(tab);
@@ -1241,7 +1284,7 @@ async function dedupeAndTidyPinned(ignoreQuery, ignoreHash) {
         toKeep.push(matchingTab);
       } else if (!entry.soft) {
         const urlToOpen = entry.rawUrl || (await getRawPinnedUrlForNormalized(norm, ignoreQuery, ignoreHash));
-        const newTab = await chrome.tabs.create({ url: urlToOpen, windowId, pinned: true });
+        const newTab = await chrome.tabs.create({ url: urlToOpen, windowId: targetWindowId, pinned: true });
         alreadyPinnedIds.add(newTab.id);
         toKeep.push(newTab);
       }
@@ -1279,20 +1322,35 @@ async function dedupeAndTidyPinned(ignoreQuery, ignoreHash) {
   }
 }
 
+function githubApiHeaders(githubToken) {
+  return {
+    Accept: 'application/vnd.github+json',
+    Authorization: `Bearer ${githubToken.trim()}`,
+    'X-GitHub-Api-Version': GITHUB_API_VERSION
+  };
+}
+
+function isGitHubRateLimitResponse(response, data) {
+  return response.status === 429 || (
+    response.status === 403 && (
+      response.headers.get('x-ratelimit-remaining') === '0' ||
+      /rate limit/i.test(data.message || '')
+    )
+  );
+}
+
 // Fetch open PR URLs from GitHub (authored by user or review-requested)
 async function fetchOpenPrUrls(githubToken) {
   if (!githubToken || !githubToken.trim()) {
     return { prUrls: [], error: 'GitHub token not set' };
   }
-  const headers = {
-    Accept: 'application/vnd.github+json',
-    Authorization: `Bearer ${githubToken.trim()}`
-  };
+  const headers = githubApiHeaders(githubToken);
   try {
     const userRes = await fetch('https://api.github.com/user', { headers });
     if (!userRes.ok) {
       const err = await userRes.json().catch(() => ({}));
       if (userRes.status === 401) return { prUrls: [], error: 'Invalid or expired GitHub token' };
+      if (isGitHubRateLimitResponse(userRes, err)) return { prUrls: [], error: 'GitHub rate limit exceeded' };
       return { prUrls: [], error: err.message || `GitHub API error: ${userRes.status}` };
     }
     const user = await userRes.json();
@@ -1304,7 +1362,7 @@ async function fetchOpenPrUrls(githubToken) {
       const res = await fetch(`https://api.github.com/search/issues?per_page=100&q=${encodeURIComponent(q)}`, { headers });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        if (res.status === 403 && /rate limit/i.test(err.message || '')) return { rateLimited: true };
+        if (isGitHubRateLimitResponse(res, err)) return { rateLimited: true };
         // A failed search must abort the sync: an empty result here would be
         // indistinguishable from "no open PRs" and the PR group would be cleared.
         return { error: err.message || `GitHub search error: ${res.status}` };
@@ -1349,11 +1407,12 @@ async function syncPrTabGroup(windowId) {
   if (!settings.githubToken?.trim()) {
     return { success: false, error: 'GitHub token not set' };
   }
+  const targetWindowId = await resolveTargetWindowId(windowId);
+  const win = await chrome.windows.get(targetWindowId);
   const { prUrls, error: fetchError } = await fetchOpenPrUrls(settings.githubToken);
   if (fetchError) return { success: false, error: fetchError };
   if (prUrls.length === 0) {
     // No open PRs: ensure group exists but is empty (or remove tabs that are no longer PRs)
-    const win = windowId != null ? await chrome.windows.get(windowId) : (await chrome.windows.getCurrent());
     const groups = await chrome.tabGroups.query({ windowId: win.id });
     const prGroup = groups.find(g => (g.title || '').trim() === PR_GROUP_TITLE);
     if (prGroup) {
@@ -1369,7 +1428,6 @@ async function syncPrTabGroup(windowId) {
   const ignoreHash = settings.ignoreHash !== false;
   const targetNorm = new Set(prUrls.map(u => normalizedPrUrl(u, ignoreQuery, ignoreHash)).filter(Boolean));
 
-  const win = windowId != null ? await chrome.windows.get(windowId) : (await chrome.windows.getCurrent());
   const allTabs = await chrome.tabs.query({ windowId: win.id });
   const tabsWithUrls = (await Promise.all(
     allTabs.map(async (tab) => {
@@ -1418,7 +1476,10 @@ async function syncPrTabGroup(windowId) {
     if (sameUrlTab) {
       usedTabIds.add(sameUrlTab.id);
       if (prGroupId == null) {
-        prGroupId = await chrome.tabs.group({ tabIds: [sameUrlTab.id] });
+        prGroupId = await chrome.tabs.group({
+          tabIds: [sameUrlTab.id],
+          createProperties: { windowId: win.id }
+        });
         prGroup = (await chrome.tabGroups.query({ windowId: win.id })).find(g => g.id === prGroupId);
         await chrome.tabGroups.update(prGroupId, { title: PR_GROUP_TITLE, color: 'blue' });
       } else {
@@ -1432,7 +1493,10 @@ async function syncPrTabGroup(windowId) {
     // Create new tab
     const newTab = await chrome.tabs.create({ url: prUrl, windowId: win.id });
     if (prGroupId == null) {
-      prGroupId = await chrome.tabs.group({ tabIds: [newTab.id] });
+      prGroupId = await chrome.tabs.group({
+        tabIds: [newTab.id],
+        createProperties: { windowId: win.id }
+      });
       await chrome.tabGroups.update(prGroupId, { title: PR_GROUP_TITLE, color: 'blue' });
     } else {
       const currentInGroup = await chrome.tabs.query({ groupId: prGroupId });
@@ -1458,6 +1522,254 @@ async function syncPrTabGroup(windowId) {
   }
 
   return { success: true, message: `PR group updated with ${prUrls.length} PR(s).` };
+}
+
+function parseGitHubIssueUrl(rawUrl) {
+  if (!isValidUrl(rawUrl)) return null;
+
+  try {
+    const url = new URL(rawUrl);
+    const hostname = url.hostname.toLowerCase();
+    if (hostname !== 'github.com' && hostname !== 'www.github.com') return null;
+
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length < 4 || parts[2].toLowerCase() !== 'issues' || !/^\d+$/.test(parts[3])) {
+      return null;
+    }
+
+    const owner = decodeURIComponent(parts[0]);
+    const repo = decodeURIComponent(parts[1]);
+    const issueNumber = Number(parts[3]);
+    const validName = /^[a-z0-9_.-]+$/i;
+    if (!validName.test(owner) || !validName.test(repo) || !Number.isSafeInteger(issueNumber) || issueNumber < 1) {
+      return null;
+    }
+
+    return {
+      owner,
+      repo,
+      issueNumber,
+      key: `${owner.toLowerCase()}/${repo.toLowerCase()}#${issueNumber}`
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function fetchGitHubIssueState(githubToken, issue) {
+  const owner = encodeURIComponent(issue.owner);
+  const repo = encodeURIComponent(issue.repo);
+  const endpoint = `https://api.github.com/repos/${owner}/${repo}/issues/${issue.issueNumber}`;
+
+  try {
+    const response = await fetch(endpoint, { headers: githubApiHeaders(githubToken) });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) {
+        return { issue, error: 'Invalid or expired GitHub token', globalError: true };
+      }
+      if (isGitHubRateLimitResponse(response, data)) {
+        return { issue, error: 'GitHub rate limit exceeded', globalError: true };
+      }
+      if (response.status === 404) {
+        return { issue, error: 'A GitHub issue was not found, or the token cannot access it' };
+      }
+      return { issue, error: data.message || `GitHub API error: ${response.status}` };
+    }
+
+    if (data.pull_request) {
+      return { issue, isPullRequest: true };
+    }
+    if (data.state !== 'open' && data.state !== 'closed') {
+      return { issue, error: 'GitHub returned an unknown issue state' };
+    }
+    return { issue, state: data.state };
+  } catch (error) {
+    return { issue, error: error.message || 'Failed to fetch GitHub issue state' };
+  }
+}
+
+async function getGitHubIssueTabs(windowId) {
+  const tabs = await chrome.tabs.query({ windowId });
+  const issueTabs = [];
+
+  for (const tab of tabs) {
+    const pendingUrl = isValidUrl(tab.pendingUrl) ? tab.pendingUrl : null;
+    const url = pendingUrl || await ensureTabUrl(tab);
+    if (url === null) continue;
+    const issue = parseGitHubIssueUrl(url);
+    if (issue) issueTabs.push({ tab: { ...tab, url }, issue });
+  }
+
+  return issueTabs;
+}
+
+// Move closed issue tabs from any group, or from no group, into the Closed group.
+async function syncClosedIssueTabGroup(windowId) {
+  const settings = await chrome.storage.local.get(['githubToken']);
+  const githubToken = settings.githubToken?.trim();
+  if (!githubToken) {
+    return { success: false, error: 'GitHub token not set' };
+  }
+
+  const targetWindowId = await resolveTargetWindowId(windowId);
+  const win = await chrome.windows.get(targetWindowId);
+  const issueTabs = await getGitHubIssueTabs(win.id);
+  if (issueTabs.length === 0) {
+    return { success: true, checkedCount: 0, movedCount: 0, message: 'No GitHub issue tabs found in this window.' };
+  }
+
+  const issuesByKey = new Map(issueTabs.map(({ issue }) => [issue.key, issue]));
+  const uniqueIssues = Array.from(issuesByKey.values());
+  const stateResults = [];
+
+  // Small batches avoid a burst of requests when a window contains many issue tabs.
+  for (let i = 0; i < uniqueIssues.length; i += 5) {
+    const batch = uniqueIssues.slice(i, i + 5);
+    const batchResults = await Promise.all(
+      batch.map(issue => fetchGitHubIssueState(githubToken, issue))
+    );
+    stateResults.push(...batchResults);
+    if (batchResults.some(result => result.globalError)) break;
+  }
+
+  const successfulResults = stateResults.filter(result => !result.error);
+  const failedResults = stateResults.filter(result => result.error);
+  const failedCount = uniqueIssues.length - successfulResults.length;
+  if (successfulResults.length === 0 && failedCount > 0) {
+    return {
+      success: false,
+      error: failedResults[0]?.error || 'Could not check GitHub issue states',
+      failedCount
+    };
+  }
+
+  const closedIssueKeys = new Set(
+    successfulResults
+      .filter(result => !result.isPullRequest && result.state === 'closed')
+      .map(result => result.issue.key)
+  );
+  const checkedCount = successfulResults.filter(result => !result.isPullRequest).length;
+
+  // Re-read the tabs after the API requests so a tab that navigated elsewhere is not moved.
+  const currentIssueTabs = await getGitHubIssueTabs(win.id);
+  const closedTabs = currentIssueTabs
+    .filter(({ issue }) => closedIssueKeys.has(issue.key))
+    .map(({ tab }) => tab);
+
+  const groups = await chrome.tabGroups.query({ windowId: win.id });
+  const closedGroup = groups.find(
+    group => (group.title || '').trim().toUpperCase() === CLOSED_GROUP_TITLE.toUpperCase()
+  );
+
+  let alreadyGroupedCount = 0;
+  let skippedPinnedCount = 0;
+  let skippedSplitViewCount = 0;
+  const tabIdsToMove = [];
+
+  for (const tab of closedTabs) {
+    if (closedGroup && tab.groupId === closedGroup.id) {
+      alreadyGroupedCount++;
+    } else if (tab.pinned) {
+      skippedPinnedCount++;
+    } else if (isInSplitView(tab)) {
+      skippedSplitViewCount++;
+    } else {
+      tabIdsToMove.push(tab.id);
+    }
+  }
+
+  const liveTabIds = await filterExistingTabIds(tabIdsToMove);
+  if (liveTabIds.length > 0) {
+    if (closedGroup) {
+      await chrome.tabs.group({ groupId: closedGroup.id, tabIds: liveTabIds });
+    } else {
+      const closedGroupId = await chrome.tabs.group({
+        tabIds: liveTabIds,
+        createProperties: { windowId: win.id }
+      });
+      await chrome.tabGroups.update(closedGroupId, { title: CLOSED_GROUP_TITLE, color: 'grey' });
+    }
+  }
+
+  let message;
+  if (closedTabs.length === 0) {
+    message = `No closed GitHub issue tabs found after checking ${checkedCount} issue(s).`;
+  } else {
+    message = `Found ${closedTabs.length} closed GitHub issue tab(s).`;
+    if (liveTabIds.length > 0) message += ` Moved ${liveTabIds.length} to ${CLOSED_GROUP_TITLE}.`;
+    if (alreadyGroupedCount > 0) message += ` ${alreadyGroupedCount} already in ${CLOSED_GROUP_TITLE}.`;
+    const skippedCount = skippedPinnedCount + skippedSplitViewCount;
+    if (skippedCount > 0) message += ` Skipped ${skippedCount} pinned or split-view tab(s).`;
+  }
+  if (failedCount > 0) {
+    message += ` Could not check ${failedCount} issue(s).`;
+  }
+
+  return {
+    success: true,
+    checkedCount,
+    closedCount: closedTabs.length,
+    movedCount: liveTabIds.length,
+    alreadyGroupedCount,
+    skippedPinnedCount,
+    skippedSplitViewCount,
+    failedCount,
+    warning: failedCount > 0 ? `Could not check ${failedCount} GitHub issue(s).` : null,
+    message
+  };
+}
+
+async function syncEnabledGitHubTabGroups(windowId) {
+  const settings = await chrome.storage.local.get([
+    'githubToken', 'prGroupEnabled', 'closedIssueGroupEnabled'
+  ]);
+  const enabled = settings.prGroupEnabled === true || settings.closedIssueGroupEnabled === true;
+  if (!enabled) return { warnings: [] };
+
+  const warnings = [];
+  if (!settings.githubToken?.trim()) {
+    warnings.push('Add a GitHub token in the extension settings.');
+  } else {
+    const runSync = async (label, sync) => {
+      try {
+        const result = await sync();
+        if (result?.success === false) {
+          const error = result.error || 'refresh failed';
+          warnings.push(`${label}: ${error}`);
+          return /invalid or expired github token|rate limit|github api error: 429|failed to fetch/i.test(error);
+        }
+        if (result?.warning) warnings.push(`${label}: ${result.warning}`);
+        return false;
+      } catch (error) {
+        const message = error.message || 'refresh failed';
+        warnings.push(`${label}: ${message}`);
+        return /authentication|unauthorized|rate limit|failed to fetch/i.test(message);
+      }
+    };
+
+    let stopRemainingSyncs = false;
+    if (settings.prGroupEnabled === true) {
+      stopRemainingSyncs = await runSync(PR_GROUP_TITLE, () => syncPrTabGroup(windowId));
+    }
+    if (settings.closedIssueGroupEnabled === true && !stopRemainingSyncs) {
+      await runSync(CLOSED_GROUP_TITLE, () => syncClosedIssueTabGroup(windowId));
+    }
+  }
+
+  if (warnings.length > 0) {
+    const uniqueWarnings = Array.from(new Set(warnings));
+    console.warn('GitHub tab group refresh warnings:', uniqueWarnings);
+    await chrome.notifications.create('github-sync-warning', {
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+      title: 'GitHub tab groups not fully refreshed',
+      message: uniqueWarnings.join('\n')
+    });
+    return { warnings: uniqueWarnings };
+  }
+
+  return { warnings: [] };
 }
 
 function formatExistingGroupsForPrompt(existingGroups) {
@@ -1502,7 +1814,7 @@ ${splitTabIndices.map((indices, i) => `- Split ${i + 1}: tabs ${indices.join(', 
     : `- Never create a group with only one tab. All single tabs should be grouped into a group named "Misc".\n- Each group must contain at least 2 tabs (except for "Misc" which can contain multiple single tabs).\n`;
   basePrompt += `\n\nIMPORTANT RULES:
 ${minSizeRule}- If you have tabs that don't fit into any logical group, put them in "Misc".
-- NEVER add or remove any tabs to the group named "BOOKMARKS" or "PRs". Leave these groups exactly as they are.
+- NEVER add or remove any tabs to groups named "BOOKMARKS" or "PRs". Leave these groups exactly as they are.
 - Pinned tabs are never included in this list. Do not reference or create groups for pinned tabs.
 - Tabs in a side-by-side split must be placed in the SAME group together. Never separate them or unsplit them.
 
@@ -2010,19 +2322,16 @@ async function callChromeAI(tabs, customInstructions, existingGroups = null, spl
   return mergeGroupBatches(results);
 }
 // Organize tabs using AI
-const ALWAYS_PRESERVED_GROUP_NAMES = ['BOOKMARKS', 'PRs'];
-const PR_GROUP_TITLE = 'PRs';
-
 function tabTitleForSort(tab) {
   return (tab.title || '').trim() || 'Untitled';
 }
 
-/** Reorder tabs inside each group A–Z by page title (skips BOOKMARKS and PRs). */
-async function sortTabsWithinGroupsByTitle(windowId) {
+/** Reorder tabs inside each group A–Z by page title (skips extension-managed groups). */
+async function sortTabsWithinGroupsByTitle(windowId, alwaysPreservedGroupNames) {
   const groups = await chrome.tabGroups.query({ windowId });
   for (const group of groups) {
     const name = (group.title || '').trim().toUpperCase();
-    if (ALWAYS_PRESERVED_GROUP_NAMES.includes(name)) continue;
+    if (alwaysPreservedGroupNames.has(name)) continue;
 
     const tabs = await chrome.tabs.query({ groupId: group.id });
     if (tabs.length <= 1) continue;
@@ -2171,7 +2480,7 @@ async function buildProviderChain(settings) {
   return (await describeProviderChain(settings)).chain;
 }
 
-async function organizeTabs(preserveGroups, mergeIntoExisting, customInstructions, preserveGroupsMinTabs = 1) {
+async function organizeTabs(preserveGroups, mergeIntoExisting, customInstructions, preserveGroupsMinTabs = 1, windowId) {
   try {
     const minTabs = parseMinTabs(preserveGroupsMinTabs);
 
@@ -2179,11 +2488,15 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     const settings = await chrome.storage.local.get([
       'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled', 'aiAllowCloudFallback',
       'aiFallbackOrder', 'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
-      'localBaseUrl', 'localModel'
+      'localBaseUrl', 'localModel', 'closedIssueGroupEnabled'
     ]);
 
-    // Use custom instructions from parameter, or fall back to saved options instructions
-    const instructions = customInstructions || settings.customInstructionsOptions || '';
+    // Use custom instructions from the action, or fall back to the saved settings.
+    let instructions = customInstructions || settings.customInstructionsOptions || '';
+    if (settings.closedIssueGroupEnabled === true) {
+      const closedGroupInstruction = `The ${CLOSED_GROUP_TITLE} group is managed by the extension. Do not assign other tabs to it.`;
+      instructions = [instructions, closedGroupInstruction].filter(Boolean).join('\n');
+    }
 
     // Validate that at least one provider in the chain is configured
     // (on-device providers need no API key: chrome-ai needs nothing, local needs a model name)
@@ -2201,7 +2514,7 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     }
 
     // Resolve URLs for suspended tabs (e.g. Arc) before filtering
-    const validTabs = await getOrganizableTabsInCurrentWindow();
+    const validTabs = await getOrganizableTabs(windowId);
 
     if (validTabs.length === 0) {
       return {
@@ -2212,16 +2525,15 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
 
     const tabs = validTabs;
 
-    // Always know which groups are BOOKMARKS / PRs so we never touch them (regardless of settings)
-    // Pinned tabs (Chrome-native) are excluded separately via tab.pinned
+    // Never change extension-managed groups, regardless of the preservation setting.
+    // Pinned tabs (Chrome-native) are excluded separately via tab.pinned.
     const allGroups = await chrome.tabGroups.query({ windowId: tabs[0].windowId });
-    const bookmarksGroupIds = new Set(
-      allGroups.filter(g => (g.title || '').trim().toUpperCase() === 'BOOKMARKS').map(g => g.id)
+    const alwaysPreservedGroupNames = getAlwaysPreservedGroupNames(settings.closedIssueGroupEnabled);
+    const alwaysPreservedGroupIds = new Set(
+      allGroups
+        .filter(g => alwaysPreservedGroupNames.has((g.title || '').trim().toUpperCase()))
+        .map(g => g.id)
     );
-    const prGroupIds = new Set(
-      allGroups.filter(g => (g.title || '').trim() === PR_GROUP_TITLE).map(g => g.id)
-    );
-    const alwaysPreservedGroupIds = new Set([...bookmarksGroupIds, ...prGroupIds]);
 
     // Preserved groups = always-preserved + (when preserveGroups) groups with more than minTabs tabs
     const preservedGroupIds = new Set(alwaysPreservedGroupIds);
@@ -2265,16 +2577,15 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     }
 
     // Re-query after ungrouping so tab.groupId is up to date (with URLs for suspended tabs)
-    const validTabsAfterUngroup = await getOrganizableTabsInCurrentWindow();
+    const validTabsAfterUngroup = await getOrganizableTabs(windowId);
 
-    // Tabs to send to AI: never pinned, BOOKMARKS, or PRs.
+    // Never send pinned tabs or tabs in extension-managed groups to AI.
     // When preserving or merging, skip tabs already in a preserved group (prompt lists those separately).
-    // When not preserving, every organizable tab is eligible.
+    // When not preserving, every other organizable tab is eligible.
     const tabsForAI = validTabsAfterUngroup.filter((tab) => {
       if (tab.pinned) return false;
       if (isInSplitView(tab)) return false;
-      if (bookmarksGroupIds.has(tab.groupId)) return false;
-      if (prGroupIds.has(tab.groupId)) return false;
+      if (alwaysPreservedGroupIds.has(tab.groupId)) return false;
       if (preserveGroups || mergeIntoExisting) {
         if (tab.groupId && tab.groupId !== -1 && preservedGroupIds.has(tab.groupId)) {
           return false;
@@ -2282,6 +2593,7 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
       }
       return true;
     });
+    const tabsForAISnapshots = new Map(tabsForAI.map(tab => [tab.id, tab]));
 
     if (tabsForAI.length === 0) {
       const hint = preserveGroups || mergeIntoExisting
@@ -2354,6 +2666,22 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
       }
       : null;
 
+    // Reserved names are a code boundary, not only a prompt instruction.
+    const groupsWithReservedNames = groups.filter(group =>
+      alwaysPreservedGroupNames.has((group.groupName || '').trim().toUpperCase())
+    );
+    if (groupsWithReservedNames.length > 0) {
+      let miscGroup = groups.find(group => (group.groupName || '').trim().toLowerCase() === 'misc');
+      if (!miscGroup) {
+        miscGroup = { groupName: 'Misc', tabIndices: [] };
+        groups.push(miscGroup);
+      }
+      for (const group of groupsWithReservedNames) {
+        miscGroup.tabIndices.push(...(group.tabIndices || []));
+      }
+      groups = groups.filter(group => !groupsWithReservedNames.includes(group));
+    }
+
     // Enforce minimum group size: merge any group with ≤ minTabs tabs into Misc
     if (minTabs > 0) {
       let miscGroup = groups.find(g => (g.groupName || '').toLowerCase() === 'misc');
@@ -2395,9 +2723,13 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
       }
     }
 
-    // Never move tabs to another window: only operate on tabs in the current window
+    // Skip tabs that moved or changed while an AI provider processed the request.
     const currentWindowId = validTabs[0].windowId;
-    const currentWindowTabIds = new Set(validTabsAfterUngroup.map((t) => t.id));
+    const currentWindowTabIds = new Set(await filterUnchangedTabIds(
+      tabsForAI.map(tab => tab.id),
+      tabsForAISnapshots,
+      currentWindowId
+    ));
 
     // Create or update tab groups
     let groupedCount = 0;
@@ -2437,7 +2769,7 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
         })
         .filter(id => id !== null && !usedTabIndices.has(id) && currentWindowTabIds.has(id));
 
-      const liveTabIds = await filterExistingTabIds(tabIds);
+      const liveTabIds = await filterUnchangedTabIds(tabIds, tabsForAISnapshots, currentWindowId);
       if (liveTabIds.length === 0) {
         continue;
       }
@@ -2463,8 +2795,10 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
         const existingTabIdSet = new Set(
           existingTabs.filter(t => t.windowId === currentWindowId).map(t => t.id)
         );
-        const newTabIds = await filterExistingTabIds(
-          liveTabIds.filter((id) => !existingTabIdSet.has(id) && currentWindowTabIds.has(id))
+        const newTabIds = await filterUnchangedTabIds(
+          liveTabIds.filter((id) => !existingTabIdSet.has(id) && currentWindowTabIds.has(id)),
+          tabsForAISnapshots,
+          currentWindowId
         );
         if (newTabIds.length > 0) {
           await chrome.tabs.group({ groupId: existingGroupId, tabIds: newTabIds });
@@ -2473,7 +2807,10 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
         groupId = existingGroupId;
       } else {
         // Create new group (only current-window tabs)
-        groupId = await chrome.tabs.group({ tabIds: liveTabIds });
+        groupId = await chrome.tabs.group({
+          tabIds: liveTabIds,
+          createProperties: { windowId: currentWindowId }
+        });
         
         // Pick a color not yet used; if all used, cycle through
         const available = allColors.filter(c => !usedColors.has(c));
@@ -2504,7 +2841,11 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     }
 
     // Create or merge into Misc group if we have tabs for it
-    const liveMiscTabIds = await filterExistingTabIds(miscTabIds);
+    const liveMiscTabIds = await filterUnchangedTabIds(
+      miscTabIds,
+      tabsForAISnapshots,
+      currentWindowId
+    );
     if (liveMiscTabIds.length > 0) {
       const existingMiscGroupId = existingGroupMap.get('misc');
       
@@ -2514,8 +2855,10 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
         const existingTabIdSet = new Set(
           existingTabs.filter(t => t.windowId === currentWindowId).map(t => t.id)
         );
-        const newMiscTabIds = await filterExistingTabIds(
-          liveMiscTabIds.filter((id) => !existingTabIdSet.has(id) && currentWindowTabIds.has(id))
+        const newMiscTabIds = await filterUnchangedTabIds(
+          liveMiscTabIds.filter((id) => !existingTabIdSet.has(id) && currentWindowTabIds.has(id)),
+          tabsForAISnapshots,
+          currentWindowId
         );
         if (newMiscTabIds.length > 0) {
           await chrome.tabs.group({ groupId: existingMiscGroupId, tabIds: newMiscTabIds });
@@ -2525,7 +2868,10 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
         // Create new Misc group (only current-window tabs)
         const miscIdsInWindow = liveMiscTabIds.filter((id) => currentWindowTabIds.has(id));
         if (miscIdsInWindow.length > 0) {
-          const newMiscGroupId = await chrome.tabs.group({ tabIds: miscIdsInWindow });
+          const newMiscGroupId = await chrome.tabs.group({
+            tabIds: miscIdsInWindow,
+            createProperties: { windowId: currentWindowId }
+          });
           await chrome.tabGroups.update(newMiscGroupId, {
             title: 'Misc',
             color: 'grey'
@@ -2538,7 +2884,7 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
 
     const sortSettings = await chrome.storage.local.get(['sortTabsWithinGroupsByTitle']);
     if (sortSettings.sortTabsWithinGroupsByTitle === true) {
-      await sortTabsWithinGroupsByTitle(currentWindowId);
+      await sortTabsWithinGroupsByTitle(currentWindowId, alwaysPreservedGroupNames);
     }
 
     return {
@@ -2571,7 +2917,7 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
   }
 }
 
-// Ungroup all tabs (always skips BOOKMARKS and PRs groups; pinned tabs are unaffected)
+// Ungroup all tabs (always skips extension-managed groups; pinned tabs are unaffected)
 async function ungroupTabs() {
   try {
     const tabs = await chrome.tabs.query({ currentWindow: true });
@@ -2582,11 +2928,13 @@ async function ungroupTabs() {
       };
     }
 
-    // Get all groups in current window; never ungroup BOOKMARKS or PRs
+    // Get all groups in the current window; never ungroup enabled extension-managed groups.
     const groups = await chrome.tabGroups.query({ windowId: tabs[0].windowId });
+    const { closedIssueGroupEnabled } = await chrome.storage.local.get(['closedIssueGroupEnabled']);
+    const alwaysPreservedGroupNames = getAlwaysPreservedGroupNames(closedIssueGroupEnabled);
     const alwaysPreservedIds = new Set(
       groups
-        .filter(g => ALWAYS_PRESERVED_GROUP_NAMES.includes((g.title || '').trim().toUpperCase()))
+        .filter(g => alwaysPreservedGroupNames.has((g.title || '').trim().toUpperCase()))
         .map(g => g.id)
     );
 
@@ -2616,7 +2964,11 @@ async function ungroupTabs() {
 // Handle messages from popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'closeDuplicates') {
-    closeDuplicates(request.ignoreQuery, request.ignoreHash, request.reloadTabs)
+    (async () => {
+      const targetWindowId = await resolveTargetWindowId(request.windowId);
+      await syncEnabledGitHubTabGroups(targetWindowId).catch(() => {});
+      return closeDuplicates(request.ignoreQuery, request.ignoreHash, request.reloadTabs, targetWindowId);
+    })()
       .then(result => sendResponse(result))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true; // Keep the message channel open for async response
@@ -2643,13 +2995,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   
   if (request.action === 'organizeTabs') {
     (async () => {
+      const targetWindowId = await resolveTargetWindowId(request.windowId);
+      await syncEnabledGitHubTabGroups(targetWindowId).catch(() => {});
       // The popup doesn't send preserveGroupsMinTabs; fall back to the saved setting
       // instead of silently using 1.
       let minTabsRaw = request.preserveGroupsMinTabs;
       if (minTabsRaw === undefined) {
         minTabsRaw = (await chrome.storage.local.get(['preserveGroupsMinTabs'])).preserveGroupsMinTabs;
       }
-      return organizeTabs(request.preserveGroups, request.mergeIntoExisting || false, request.customInstructions, parseMinTabs(minTabsRaw));
+      return organizeTabs(
+        request.preserveGroups,
+        request.mergeIntoExisting || false,
+        request.customInstructions,
+        parseMinTabs(minTabsRaw),
+        targetWindowId
+      );
     })()
       .then(result => sendResponse(result))
       .catch(error => sendResponse({ success: false, error: error.message }));
@@ -2665,19 +3025,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   
   if (request.action === 'dedupeAndTidyPinned') {
     (async () => {
+      const targetWindowId = await resolveTargetWindowId(request.windowId);
+      await syncEnabledGitHubTabGroups(targetWindowId).catch(() => {});
       const settings = await chrome.storage.local.get(['ignoreQuery', 'ignoreHash', 'reloadTabs']);
       const ignoreQuery = settings.ignoreQuery !== false;
       const ignoreHash = settings.ignoreHash !== false;
       const reloadTabs = settings.reloadTabs === true;
-      await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs);
-      const result = await dedupeAndTidyPinned(ignoreQuery, ignoreHash);
-      sendResponse(result);
-    })();
+      await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, targetWindowId);
+      return dedupeAndTidyPinned(ignoreQuery, ignoreHash, targetWindowId);
+    })()
+      .then(result => sendResponse(result))
+      .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   }
 
   if (request.action === 'syncPrTabGroup') {
     syncPrTabGroup(request.windowId)
+      .then(result => sendResponse(result))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (request.action === 'syncClosedIssueTabGroup') {
+    syncClosedIssueTabGroup(request.windowId)
       .then(result => sendResponse(result))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
