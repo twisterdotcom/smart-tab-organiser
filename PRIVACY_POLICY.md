@@ -47,8 +47,8 @@ This extension stores preferences and optional secrets (API keys, GitHub tokens)
 - **Usage**: Shows browser notifications when relevant; no notification content is sent to external servers by this extension
 
 ### `contextMenus` Permission
-- **Purpose**: Adds browser context menu entries for dedupe and organise actions
-- **Usage**: Menu actions trigger the same in-browser logic as the toolbar and options UI
+- **Purpose**: Adds browser context menu entries for tab actions and extension options
+- **Usage**: Menu actions organize, reload, collapse, or expand tabs in the selected window
 
 ## Third-Party Services
 

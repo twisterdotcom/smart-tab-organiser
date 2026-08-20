@@ -1,7 +1,7 @@
 // Options page script
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // Scroll to custom instructions when opened via "Edit prompt"
+  // Scroll to custom instructions when the URL includes its section hash.
   if (window.location.hash === '#custom-instructions') {
     const el = document.getElementById('custom-instructions');
     if (el) el.scrollIntoView();

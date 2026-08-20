@@ -125,7 +125,13 @@ Click the icon (if it opens the popup—some setups run the action directly). Fr
 
 ### Context menu
 
-Right-click the page or the extension icon (depending on browser) and use entries such as **Deduplicate and organize tabs with AI** or **Deduplicate and tidy pinned tabs**—wording matches your installed version.
+Right-click the extension icon. The menu entries appear in this order:
+
+1. **Deduplicate AND organize tabs with AI**
+2. **Reload all tabs**
+3. **Collapse all tab groups**
+4. **Expand all tab groups**
+5. **Edit extension options**
 
 ### Keyboard
 

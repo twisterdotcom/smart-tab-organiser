@@ -338,12 +338,12 @@ chrome.runtime.onInstalled.addListener((details) => {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: 'dedupe-and-organize',
-      title: 'Deduplicate and organize tabs with AI',
+      title: 'Deduplicate AND organize tabs with AI',
       contexts: ['action']
     });
     chrome.contextMenus.create({
-      id: 'edit-prompt',
-      title: 'Edit prompt',
+      id: 'reload-all-tabs',
+      title: 'Reload all tabs',
       contexts: ['action']
     });
     chrome.contextMenus.create({
@@ -354,6 +354,11 @@ chrome.runtime.onInstalled.addListener((details) => {
     chrome.contextMenus.create({
       id: 'expand-all-groups',
       title: 'Expand all tab groups',
+      contexts: ['action']
+    });
+    chrome.contextMenus.create({
+      id: 'edit-extension-options',
+      title: 'Edit extension options',
       contexts: ['action']
     });
   });
@@ -556,12 +561,14 @@ async function expandAllTabGroups() {
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === 'dedupe-and-organize') {
     runOrganizeWithFeedback(tab?.windowId);
-  } else if (info.menuItemId === 'edit-prompt') {
-    chrome.tabs.create({ url: chrome.runtime.getURL('options.html#custom-instructions') });
+  } else if (info.menuItemId === 'reload-all-tabs') {
+    reloadAllTabs(tab?.windowId);
   } else if (info.menuItemId === 'collapse-all-groups') {
     collapseAllTabGroups();
   } else if (info.menuItemId === 'expand-all-groups') {
     expandAllTabGroups();
+  } else if (info.menuItemId === 'edit-extension-options') {
+    chrome.runtime.openOptionsPage();
   }
 });
 
@@ -1040,9 +1047,9 @@ async function closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, windowId) {
 }
 
 // Reload all tabs
-async function reloadAllTabs() {
+async function reloadAllTabs(windowId) {
   try {
-    const tabs = await chrome.tabs.query({ currentWindow: true });
+    const tabs = await chrome.tabs.query(tabQueryForWindow(windowId));
     const reloadPromises = tabs.map(tab => 
       chrome.tabs.reload(tab.id).catch(err => {
         console.error(`Failed to reload tab ${tab.id}:`, err);
@@ -2975,7 +2982,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   
   if (request.action === 'reloadAllTabs') {
-    reloadAllTabs()
+    reloadAllTabs(request.windowId)
       .then(result => sendResponse(result))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true; // Keep the message channel open for async response
