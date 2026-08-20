@@ -91,11 +91,11 @@
             <label class="setting-label" for="pinnedUrls">Pinned URLs (one per line, order = tab order)</label>
             <p class="setting-description">
               <strong>Exact match</strong> (no prefix): only that exact URL stays pinned (after normalizing query/hash per your duplicate settings).<br>
-              <strong>Prefix match</strong>: start a line with <code>*</code> so any tab whose URL starts with the rest of the line stays pinned (e.g. <code>*https://mail.google.com/mail/u/0</code> keeps inbox, drafts, etc.; <code>*https://chatgpt.com/</code> keeps any ChatGPT page; <code>*https://app.slack.com/client/E047TPA624F</code> keeps that workspace and any channel).<br>
-              <strong>Soft (only when already open):</strong> start with <code>~</code> so the tab is only pinned when it already exists in the window; the extension never opens it. Use <code>~*https://...</code> for soft prefix or <code>~https://...</code> for soft exact. Example: <code>~*https://app.slack.com/client/E047TPA624F</code> keeps Slack pinned only in windows where you have Slack open — it won’t be recreated in new windows. Leave empty to keep all currently pinned tabs as-is when tidying.
+              <strong>Prefix match</strong>: start a line with <code>*</code> so any tab whose URL starts with the rest of the line stays pinned. For example, <code>*https://mail.example.com/</code> keeps all sample mail pages, and <code>*https://app.example.com/workspace/demo</code> keeps all pages in the sample workspace.<br>
+              <strong>Soft (only when already open):</strong> start with <code>~</code> so the tab is only pinned when it already exists in the window; the extension never opens it. Use <code>~*https://...</code> for soft prefix or <code>~https://...</code> for soft exact. Example: <code>~*https://app.example.com/workspace/demo</code> keeps the sample workspace pinned only when it is already open. Leave empty to keep all currently pinned tabs as-is when tidying.
             </p>
           </div>
-          <textarea id="pinnedUrls" class="custom-instructions-textarea" placeholder="*https://mail.google.com/mail/u/0&#10;*https://app.slack.com/client/E047TPA624F&#10;https://staging.new.expensify.com/home&#10;*https://chatgpt.com/" rows="5"></textarea>
+          <textarea id="pinnedUrls" class="custom-instructions-textarea" placeholder="*https://mail.example.com/&#10;*https://app.example.com/workspace/demo&#10;https://docs.example.com/start&#10;*https://chat.example.com/" rows="5"></textarea>
         </div>
 
         <div class="setting-item">
