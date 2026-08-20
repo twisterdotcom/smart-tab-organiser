@@ -38,9 +38,11 @@ Chrome stores this data in storage that belongs to the extension. The extension 
 
 ### Authentication information
 
-API keys and the GitHub token are authentication information. The extension stores them locally until the user removes them or uninstalls the extension.
+API keys and the GitHub token are authentication information. The extension stores them in the user's Chrome profile until the user removes them or uninstalls the extension.
 
 The extension sends a credential only to the service that issued it. The extension sends credentials in request headers, not in request URLs.
+
+Users can reduce financial risk by using dedicated provider keys with spending limits.
 
 ## Network use
 
@@ -51,6 +53,8 @@ Duplicate removal, pinned-tab management, tab reloading, and local tab grouping 
 ### Cloud AI providers
 
 Cloud AI is optional. When the user selects a cloud provider and starts AI organization, the extension sends data directly to that provider.
+
+Provider fallback is off by default. If the user enables fallback, the extension can send the same data to each eligible provider that it attempts. A provider can receive the prompt even when its request fails.
 
 The request can include:
 
@@ -69,11 +73,13 @@ The selected provider processes the request under its own terms and privacy poli
 
 The user's provider account controls API costs and provider-side retention. The extension developer does not receive these requests or responses.
 
-### Cloud fallback
+### Provider fallback
 
-Cloud fallback is off by default for an on-device primary provider. The user must enable cloud fallback before an on-device failure can send tab data to a cloud provider.
+All provider fallback is off by default. The user must enable fallback before the extension attempts another provider.
 
-A cloud primary can use another configured cloud provider as a fallback. The options page shows the provider order before the user starts organization.
+A cloud primary can use another configured cloud provider as a fallback. A local primary requires a separate cloud-fallback setting before it can use a cloud provider.
+
+The options page shows the provider order before the user starts organization.
 
 ### Chrome built-in AI
 
@@ -85,9 +91,13 @@ Chrome can download the local model from Google. Chrome controls that model down
 
 The local-model feature sends the AI prompt to `localhost` or `127.0.0.1`. This loopback request goes to software on the same computer, such as Ollama or LM Studio.
 
-The local server can use HTTP because the traffic stays on the same computer. The extension does not permit a local-model address on another computer or network host.
+The extension sends tab URLs without query parameters or fragments. URL paths can still contain personal or sensitive information.
 
-The local server controls its own logs and data retention. The extension developer does not receive local-model requests or responses.
+The server configuration determines whether the server processes the prompt locally or forwards it elsewhere. The server also controls its logs and data retention.
+
+The local server can use HTTP because the first network hop stays on the same computer. The extension does not permit another computer or network host.
+
+The extension developer does not receive local-model requests or responses.
 
 ### GitHub API
 
@@ -113,7 +123,7 @@ GitHub processes requests under the [GitHub General Privacy Statement](https://d
 
 The extension shares data only for the user-facing features described in this policy:
 
-- With OpenAI, Anthropic, or Google when the user starts cloud AI organization
+- With OpenAI, Anthropic, or Google when the user starts cloud AI organization, including an enabled fallback
 - With GitHub when the user enables or starts a GitHub group feature
 - With a loopback model server when the user selects the local-model provider
 
@@ -127,7 +137,7 @@ Chrome removes extension-local storage when the user uninstalls the extension. A
 
 ## Security
 
-Cloud AI and GitHub requests use HTTPS. Local-model requests are restricted to loopback addresses on the same computer.
+Cloud AI and GitHub requests use HTTPS. Local-model requests are restricted to loopback addresses on the same computer. The loopback server controls any later connection.
 
 The extension package contains all executable code. It does not download or execute remote JavaScript or WebAssembly.
 

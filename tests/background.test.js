@@ -15,6 +15,24 @@ function eventStub() {
   return { addListener() {} };
 }
 
+function makeSseResponse(chunks) {
+  const encoder = new TextEncoder();
+  const encoded = chunks.map(chunk => encoder.encode(chunk));
+  let index = 0;
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: () => 'text/event-stream; charset=utf-8' },
+    body: {
+      getReader: () => ({
+        read: async () => index < encoded.length
+          ? { value: encoded[index++], done: false }
+          : { value: undefined, done: true },
+      }),
+    },
+  };
+}
+
 function loadBackground() {
   const chrome = {
     action: {
@@ -91,6 +109,8 @@ function loadBackground() {
     resolveStoredModel: (_provider, model) => model || 'test-model',
     setInterval,
     setTimeout,
+    TextDecoder,
+    TextEncoder,
   };
   context.globalThis = context;
   context.self = context;
@@ -100,10 +120,10 @@ function loadBackground() {
   return { chrome, context };
 }
 
-test('cloud AI URLs exclude credentials, query parameters, and fragments', () => {
+test('AI URLs exclude credentials, query parameters, and fragments', () => {
   const { context } = loadBackground();
 
-  const result = context.sanitizeUrlForCloudAi(
+  const result = context.sanitizeUrlForAi(
     'https://user:secret@example.com/private/path?token=abc#message-42'
   );
 
@@ -139,16 +159,67 @@ test('the OpenAI request body receives only sanitized URLs', async () => {
     ],
     '',
     null,
-    null,
     1
   );
 
   assert.equal(result[0].groupName, 'Work');
   assert.ok(requestBody);
+  assert.equal(requestBody.stream, true);
   const prompt = requestBody.messages[0].content;
   assert.match(prompt, /https:\/\/example\.com\/work/);
   assert.match(prompt, /https:\/\/example\.com\/docs/);
   assert.doesNotMatch(prompt, /token=secret|page=2|#one|#two/);
+});
+
+test('Claude and Gemini requests use their streaming APIs', async () => {
+  const { context } = loadBackground();
+  const tabs = [
+    { title: 'One', url: 'https://example.com/one' },
+    { title: 'Two', url: 'https://example.com/two' },
+  ];
+  let claudeBody = null;
+
+  context.fetch = async (url, init) => {
+    assert.equal(url, 'https://api.anthropic.com/v1/messages');
+    claudeBody = JSON.parse(init.body);
+    return makeSseResponse([
+      `data: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: '[{"groupName":"Claude","tabIndices":[1,2]}]' } })}\n\n`,
+    ]);
+  };
+
+  const claudeGroups = await context.callClaude('claude-key', 'claude-sonnet-5', tabs, '', null, 1);
+  assert.equal(claudeBody.stream, true);
+  assert.equal(claudeGroups[0].groupName, 'Claude');
+
+  let geminiBody = null;
+  context.fetch = async (url, init) => {
+    assert.equal(
+      url,
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:streamGenerateContent?alt=sse'
+    );
+    geminiBody = JSON.parse(init.body);
+    return makeSseResponse([
+      `data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: '[{"groupName":"Gemini","tabIndices":[1,2]}]' }] } }] })}\n\n`,
+    ]);
+  };
+
+  const geminiGroups = await context.callGemini('gemini-key', 'gemini-3.7-flash', tabs, '', null, 1);
+  assert.equal('temperature' in geminiBody.generationConfig, false);
+  assert.equal(geminiGroups[0].groupName, 'Gemini');
+});
+
+test('SSE parsing supports multiline data fields and standalone CR endings', async () => {
+  const { context } = loadBackground();
+  const events = [];
+  const response = makeSseResponse([
+    'data: {"value":\r',
+    'data: 1}\r\r',
+  ]);
+
+  await context.readSseJsonEvents(response, event => events.push(event));
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].value, 1);
 });
 
 test('local model requests reject non-loopback hosts before fetch', async () => {
@@ -158,6 +229,90 @@ test('local model requests reject non-loopback hosts before fetch', async () => 
     context.listLocalModels('http://192.168.1.20:11434/v1'),
     /must use http:\/\/localhost or http:\/\/127\.0\.0\.1/
   );
+});
+
+test('provider fallback is disabled until the user enables it', async () => {
+  const { context } = loadBackground();
+
+  const description = await context.describeProviderChain({
+    aiProvider: 'openai',
+    openaiKey: 'openai-key',
+    claudeKey: 'claude-key',
+  });
+
+  assert.equal(description.fallbackEnabled, false);
+  assert.deepEqual(Array.from(description.chain), ['openai']);
+});
+
+test('local model responses stream before they are parsed', async () => {
+  const { context } = loadBackground();
+  const encoder = new TextEncoder();
+  const chunks = [
+    `data: ${JSON.stringify({ choices: [{ delta: { content: '[{"groupName":"Local","tabIndices":' } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { content: '[1,2]}]' } }] })}\n\n`,
+    'data: [DONE]\n\n',
+  ].map(chunk => encoder.encode(chunk));
+  let requestBody = null;
+
+  context.fetch = async (_url, init) => {
+    requestBody = JSON.parse(init.body);
+    let index = 0;
+    return {
+      ok: true,
+      headers: { get: () => 'text/event-stream; charset=utf-8' },
+      body: {
+        getReader: () => ({
+          read: async () => index < chunks.length
+            ? { value: chunks[index++], done: false }
+            : { value: undefined, done: true },
+        }),
+      },
+    };
+  };
+
+  const groups = await context.callLocalModel(
+    'http://localhost:11434/v1',
+    'test-model',
+    [
+      { title: 'One', url: 'https://example.com/one' },
+      { title: 'Two', url: 'https://example.com/two' },
+    ],
+    '',
+    null,
+    1
+  );
+
+  assert.equal(requestBody.stream, true);
+  assert.equal(groups[0].groupName, 'Local');
+  assert.deepEqual(Array.from(groups[0].tabIndices), [1, 2]);
+});
+
+test('local model retries share one total timeout', async () => {
+  const { context } = loadBackground();
+  const clockValues = [0, 0, 180001];
+  let fetchCount = 0;
+  context.Date = { now: () => clockValues.shift() ?? 180001 };
+  context.fetch = async () => {
+    fetchCount++;
+    return {
+      ok: true,
+      headers: { get: () => 'application/json' },
+      json: async () => ({ choices: [{ message: { content: 'not valid grouping JSON' } }] }),
+    };
+  };
+
+  await assert.rejects(
+    context.callLocalModel(
+      'http://localhost:11434/v1',
+      'test-model',
+      [{ title: 'One', url: 'https://example.com/one' }],
+      '',
+      null,
+      1
+    ),
+    /timed out after 180s/
+  );
+  assert.equal(fetchCount, 1);
 });
 
 test('an empty PR result ungroups managed tabs without closing them', async () => {
@@ -312,7 +467,7 @@ test('dedupe runs before GitHub issue labels and assigns the first matching grou
     githubToken: 'github-token',
     githubLabelGroupsEnabled: true,
     githubLabelGroupNames: ['Overdue', 'Daily', 'Bug', 'New Feature'],
-    githubManagedLabelGroupNames: [],
+    githubManagedLabelGroupNamesByWindow: {},
     closedIssueGroupEnabled: false,
     prGroupEnabled: false,
     ignoreQuery: true,
@@ -452,7 +607,7 @@ test('dedupe runs before GitHub issue labels and assigns the first matching grou
   tabs.find(tab => tab.id === 3).splitViewId = -1;
   await context.syncGitHubIssueTabGroups(1);
   assert.equal(tabs.every(tab => tab.groupId === -1), true);
-  assert.deepEqual(Array.from(settings.githubManagedLabelGroupNames), []);
+  assert.deepEqual(Object.keys(settings.githubManagedLabelGroupNamesByWindow), []);
 });
 
 test('Closed-only refresh does not assign enabled label groups', async () => {
@@ -461,7 +616,6 @@ test('Closed-only refresh does not assign enabled label groups', async () => {
     githubToken: 'github-token',
     githubLabelGroupsEnabled: true,
     githubLabelGroupNames: ['Bug'],
-    githubManagedLabelGroupNames: [],
     githubManagedLabelGroupNamesByWindow: {},
     closedIssueGroupEnabled: false,
   };
@@ -514,7 +668,6 @@ test('a tab that navigates during grouping is removed from the managed group', a
     githubToken: 'github-token',
     githubLabelGroupsEnabled: true,
     githubLabelGroupNames: ['Bug'],
-    githubManagedLabelGroupNames: [],
     githubManagedLabelGroupNamesByWindow: {},
     closedIssueGroupEnabled: false,
   };
@@ -560,7 +713,6 @@ test('managed GitHub label history remains scoped to each window', async () => {
   const settings = {
     githubLabelGroupsEnabled: true,
     githubLabelGroupNames: [],
-    githubManagedLabelGroupNames: [],
     githubManagedLabelGroupNamesByWindow: { 2: ['Bug'] },
   };
   chrome.storage.local.get = async () => ({ ...settings });
@@ -583,7 +735,6 @@ test('partial GitHub errors preserve failed tabs from AI and managed groups from
     githubToken: 'github-token',
     githubLabelGroupsEnabled: true,
     githubLabelGroupNames: ['Bug'],
-    githubManagedLabelGroupNames: [],
     closedIssueGroupEnabled: false,
     prGroupEnabled: false,
     ignoreQuery: true,

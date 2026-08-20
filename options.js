@@ -175,7 +175,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     geminiKeyInput.value = settings.geminiKey;
   }
   aiProviderSelect.value = settings.aiProvider || 'openai';
-  aiFallbackEnabledCheckbox.checked = settings.aiFallbackEnabled !== false; // default to true
+  aiFallbackEnabledCheckbox.checked = settings.aiFallbackEnabled === true; // explicit opt-in
   aiAllowCloudFallbackCheckbox.checked = settings.aiAllowCloudFallback === true; // default off — explicit opt-in
   const openaiResolved = globalThis.populateModelSelect(openaiModelSelect, 'openai', settings.openaiModel);
   const claudeResolved = globalThis.populateModelSelect(claudeModelSelect, 'claude', settings.claudeModel);
@@ -207,10 +207,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   mergeIntoExistingCheckbox.checked = settings.mergeIntoExisting === true;
   sortTabsWithinGroupsByTitleCheckbox.checked = settings.sortTabsWithinGroupsByTitle === true;
   organizeOnClickCheckbox.checked = settings.organizeOnClick === true;
-  if (settings.pinnedUrls && Array.isArray(settings.pinnedUrls)) {
+  if (Array.isArray(settings.pinnedUrls)) {
     pinnedUrlsTextarea.value = settings.pinnedUrls.join('\n');
-  } else if (typeof settings.pinnedUrls === 'string') {
-    pinnedUrlsTextarea.value = settings.pinnedUrls;
   }
   if (settings.githubToken) {
     githubTokenInput.value = settings.githubToken;
@@ -262,9 +260,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     claude: 'Claude',
     gemini: 'Gemini',
     'chrome-ai': 'Chrome built-in AI',
-    local: 'Local model'
+    local: 'Loopback model server'
   };
-  const ON_DEVICE_PROVIDERS_OPTIONS = ['chrome-ai', 'local'];
+  const LOCAL_PROVIDERS_OPTIONS = ['chrome-ai', 'local'];
 
   // Row tags for each status describeProviderChain can report.
   const ORDER_TAG_TEXT = {
@@ -285,12 +283,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // The cloud opt-in only means something for an on-device primary, and the order list
+  // The cloud opt-in only applies to a local primary, and the order list
   // only means something with fallback on at all.
   function updateFallbackControlsVisibility() {
     const primary = aiProviderSelect.value || 'openai';
     const fallbackOn = aiFallbackEnabledCheckbox.checked;
-    cloudFallbackRow.style.display = fallbackOn && ON_DEVICE_PROVIDERS_OPTIONS.includes(primary) ? '' : 'none';
+    cloudFallbackRow.style.display = fallbackOn && LOCAL_PROVIDERS_OPTIONS.includes(primary) ? '' : 'none';
     fallbackOrderItem.style.display = fallbackOn ? '' : 'none';
   }
 
@@ -363,22 +361,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     ];
 
     const statusByProvider = new Map(desc.entries.map((e) => [e.provider, e.status]));
-    if (desc.onDevicePrimary) {
+    if (desc.localPrimary) {
       if (statusByProvider.get('local') === 'no-model-name') {
-        parts.push('Set a Local model name to enable the on-device fallback.');
+        parts.push('Set a loopback model name to enable the local fallback.');
       }
       if (statusByProvider.get('chrome-ai') === 'not-downloaded') {
         parts.push('Chrome built-in AI joins the chain once its model is downloaded.');
       }
       if (aiAllowCloudFallbackCheckbox.checked) {
-        parts.push(desc.chain.some((p) => !ON_DEVICE_PROVIDERS_OPTIONS.includes(p))
+        parts.push(desc.chain.some((p) => !LOCAL_PROVIDERS_OPTIONS.includes(p))
           ? 'If a cloud fallback runs, tab titles and URLs are sent to that provider.'
           : 'Cloud fallback is allowed, but no cloud provider has an API key yet.');
       } else {
         parts.push('Cloud providers will never be used.');
       }
     } else if (desc.chain.length > 1) {
-      parts.push('Cloud primaries never fall back to on-device providers.');
+      parts.push('Cloud primaries never fall back to local providers.');
     } else {
       parts.push('Add an OpenAI, Claude or Gemini API key above to enable automatic fallback.');
     }
@@ -442,7 +440,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   localModelInput.addEventListener('input', () => {
     chrome.storage.local.set({ localModel: localModelInput.value.trim() });
-    scheduleFallbackUiRefresh(); // the on-device fallback chain depends on a model name being set
+    scheduleFallbackUiRefresh(); // the local fallback chain depends on a model name being set
   });
 
   // Ask the service worker to check the local server, so the result reflects

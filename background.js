@@ -10,6 +10,12 @@ const RESERVED_GITHUB_LABEL_GROUP_NAMES = new Set(['BOOKMARKS', 'PRS', 'CLOSED',
 const GITHUB_LABEL_GROUP_COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'cyan', 'grey'];
 const GITHUB_API_VERSION = '2022-11-28';
 
+if (typeof chrome.storage.local.setAccessLevel === 'function') {
+  chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }).catch(error => {
+    console.warn('Could not restrict extension storage access:', error);
+  });
+}
+
 /** Extract a complete bracketed slice starting at `start` (handles strings/escapes). */
 function extractBracketedSlice(text, start) {
   if (start < 0 || start >= text.length || text[start] !== '[') return null;
@@ -58,11 +64,7 @@ function normalizeGitHubLabelName(name) {
 }
 
 function normalizeGitHubLabelGroupNames(value) {
-  const rawNames = Array.isArray(value)
-    ? value
-    : typeof value === 'string'
-      ? value.split(/\r?\n/)
-      : [];
+  const rawNames = Array.isArray(value) ? value : [];
   const seen = new Set();
   const names = [];
 
@@ -88,10 +90,7 @@ function getManagedGitHubLabelGroupNames(settings, windowId) {
       scopedNames = normalizeGitHubLabelGroupNames(Object.values(byWindow).flat());
     }
   }
-  return normalizeGitHubLabelGroupNames([
-    ...normalizeGitHubLabelGroupNames(settings?.githubManagedLabelGroupNames),
-    ...scopedNames,
-  ]);
+  return scopedNames;
 }
 
 let githubManagedLabelHistoryWrite = Promise.resolve();
@@ -107,19 +106,13 @@ async function setManagedGitHubLabelGroupNames(windowId, names) {
         : {};
       if (normalizedNames.length > 0) byWindow[String(windowId)] = normalizedNames;
       else delete byWindow[String(windowId)];
-      await chrome.storage.local.set({
-        githubManagedLabelGroupNames: [],
-        githubManagedLabelGroupNamesByWindow: byWindow,
-      });
+      await chrome.storage.local.set({ githubManagedLabelGroupNamesByWindow: byWindow });
     });
   githubManagedLabelHistoryWrite = write;
   return write;
 }
 
-function getAlwaysPreservedGroupNames(settingsOrClosedEnabled = false, windowId) {
-  const settings = typeof settingsOrClosedEnabled === 'object' && settingsOrClosedEnabled !== null
-    ? settingsOrClosedEnabled
-    : { closedIssueGroupEnabled: settingsOrClosedEnabled };
+function getAlwaysPreservedGroupNames(settings = {}, windowId) {
   const names = new Set(ALWAYS_PRESERVED_GROUP_NAMES);
   if (settings.closedIssueGroupEnabled === true) names.add(CLOSED_GROUP_TITLE.toUpperCase());
   if (settings.githubLabelGroupsEnabled === true) {
@@ -215,13 +208,13 @@ const PROVIDER_LABELS = {
   claude: 'Claude',
   gemini: 'Gemini',
   'chrome-ai': 'Chrome built-in AI',
-  local: 'Local model'
+  local: 'Loopback model server'
 };
-// Providers that never send tab data off the machine.
-const ON_DEVICE_PROVIDERS = ['chrome-ai', 'local'];
+// Providers that the extension contacts only on this computer.
+const LOCAL_PROVIDERS = ['chrome-ai', 'local'];
 
-function isOnDeviceProvider(provider) {
-  return ON_DEVICE_PROVIDERS.includes(provider);
+function isLocalProvider(provider) {
+  return LOCAL_PROVIDERS.includes(provider);
 }
 
 function providerLabel(provider) {
@@ -674,7 +667,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   }
 });
 
-// Keyboard shortcut: Cmd+Shift+O (Mac) / Ctrl+Shift+O (Windows)
+// User-assigned keyboard shortcut.
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'organize-tabs') {
     runOrganizeWithFeedback();
@@ -796,8 +789,7 @@ function isValidUrl(url) {
   if (url.startsWith('chrome://') || 
       url.startsWith('chrome-extension://') ||
       url.startsWith('about:') ||
-      url.startsWith('edge://') ||
-      url.startsWith('moz-extension://')) {
+      url.startsWith('edge://')) {
     return false;
   }
   
@@ -940,8 +932,7 @@ function normalizeUrl(url, ignoreQuery, ignoreHash) {
     
     // Normalize default index files
     const pathname = urlObj.pathname
-      .replace(/\/index\.(html|htm|xhtml|php|cgi|aspx)$/i, '/')
-      .replace(/\/$/, '/');
+      .replace(/\/index\.(html|htm|xhtml|php|cgi|aspx)$/i, '/');
     
     urlObj.pathname = pathname;
     
@@ -1002,7 +993,7 @@ function compareSplitViewPreference(tab1, tab2) {
   return 0;
 }
 
-function compareTabsByRecency(tab1, tab2, ignoreHash) {
+function compareTabsByRecency(tab1, tab2) {
   const num1 = extractAnchorNumber(tab1.url);
   const num2 = extractAnchorNumber(tab2.url);
 
@@ -1019,7 +1010,7 @@ function comparePinnedPreference(tab1, tab2) {
 }
 
 // Split view > pinned > PR group > highest anchor / most recent
-function compareTabsWithPrGroup(tab1, tab2, ignoreHash, prGroupId) {
+function compareTabsWithPrGroup(tab1, tab2, prGroupId) {
   const splitPref = compareSplitViewPreference(tab1, tab2);
   if (splitPref !== 0) return splitPref;
   const pinnedPref = comparePinnedPreference(tab1, tab2);
@@ -1030,7 +1021,7 @@ function compareTabsWithPrGroup(tab1, tab2, ignoreHash, prGroupId) {
     if (t1InPr && !t2InPr) return -1;
     if (!t1InPr && t2InPr) return 1;
   }
-  return compareTabsByRecency(tab1, tab2, ignoreHash);
+  return compareTabsByRecency(tab1, tab2);
 }
 
 async function refreshTabsForDedupe(tabs) {
@@ -1104,7 +1095,7 @@ async function closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, windowId) {
     const tabsToClose = [];
     const tabsToKeep = [];
     
-    tabGroups.forEach((groupTabs, normalizedUrl) => {
+    tabGroups.forEach((groupTabs) => {
       if (groupTabs.length <= 1) {
         // No duplicates in this group
         tabsToKeep.push(...groupTabs);
@@ -1112,7 +1103,7 @@ async function closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, windowId) {
       }
       
       // Sort to find the best tab to keep: split view > in PR group > highest anchor / most recent
-      groupTabs.sort((a, b) => compareTabsWithPrGroup(a, b, ignoreHash, prGroupId));
+      groupTabs.sort((a, b) => compareTabsWithPrGroup(a, b, prGroupId));
       
       // Keep the first one (highest anchor number or most recent)
       const tabToKeep = groupTabs[0];
@@ -1195,7 +1186,7 @@ async function reloadAllTabs(windowId) {
 // - ~* = soft prefix (e.g. ~*https://app.slack.com/). Plain ~https://... = soft exact.
 // Each entry has rawUrl (for creating tabs) and soft (true = do not create tab).
 function getPinnedEntries(list, ignoreQuery, ignoreHash) {
-  const lines = Array.isArray(list) ? list : (typeof list === 'string' ? list.split('\n').map(s => s.trim()).filter(Boolean) : []);
+  const lines = Array.isArray(list) ? list : [];
   const entries = [];
   const exactSet = new Set();
   for (const line of lines) {
@@ -1274,8 +1265,7 @@ async function ensurePinnedTabsExist(windowId, ignoreQuery, ignoreHash) {
 
     if (entry.soft) continue;
 
-    const urlToOpen = entry.rawUrl || (await getRawPinnedUrlForNormalized(norm, ignoreQuery, ignoreHash));
-    const newTab = await chrome.tabs.create({ url: urlToOpen, windowId });
+    const newTab = await chrome.tabs.create({ url: entry.rawUrl, windowId });
     tabIdsInOrder.push(newTab.id);
     usedTabIds.add(newTab.id);
   }
@@ -1293,22 +1283,6 @@ async function ensurePinnedTabsExist(windowId, ignoreQuery, ignoreHash) {
   return { pinned: true };
 }
 
-// Helper: get raw URL string for an exact normalized pattern from stored pinned list (skips soft and prefix lines).
-async function getRawPinnedUrlForNormalized(normalizedPattern, ignoreQuery, ignoreHash) {
-  const rawStored = await chrome.storage.local.get(['pinnedUrls']);
-  const rawList = Array.isArray(rawStored.pinnedUrls)
-    ? rawStored.pinnedUrls
-    : (typeof rawStored.pinnedUrls === 'string' ? rawStored.pinnedUrls.split('\n').map(s => s.trim()).filter(Boolean) : []);
-  for (const line of rawList) {
-    if (!line) continue;
-    let rest = line.trim();
-    if (rest.startsWith('~')) rest = rest.slice(1).trim();
-    if (rest.startsWith('*')) continue; // exact lookup only
-    const normalized = normalizeUrl(rest, ignoreQuery, ignoreHash);
-    if (normalized === normalizedPattern) return rest;
-  }
-  return normalizedPattern;
-}
 
 // Deduplicate then tidy pinned tabs: unpin tabs not in the pinned URL list, pin & order matching ones.
 async function dedupeAndTidyPinned(ignoreQuery, ignoreHash, windowId) {
@@ -1405,8 +1379,7 @@ async function dedupeAndTidyPinned(ignoreQuery, ignoreHash, windowId) {
         alreadyPinnedIds.add(matchingTab.id);
         toKeep.push(matchingTab);
       } else if (!entry.soft) {
-        const urlToOpen = entry.rawUrl || (await getRawPinnedUrlForNormalized(norm, ignoreQuery, ignoreHash));
-        const newTab = await chrome.tabs.create({ url: urlToOpen, windowId: targetWindowId, pinned: true });
+        const newTab = await chrome.tabs.create({ url: entry.rawUrl, windowId: targetWindowId, pinned: true });
         alreadyPinnedIds.add(newTab.id);
         toKeep.push(newTab);
       }
@@ -1587,7 +1560,7 @@ async function syncPrTabGroup(windowId) {
 
   let prGroupId = null;
   const groups = await chrome.tabGroups.query({ windowId: win.id });
-  let prGroup = groups.find(g => (g.title || '').trim() === PR_GROUP_TITLE);
+  const prGroup = groups.find(g => (g.title || '').trim() === PR_GROUP_TITLE);
 
   // Tabs already in PR group that match a current PR URL (normalized)
   const inPrGroupByNorm = new Map();
@@ -1628,12 +1601,9 @@ async function syncPrTabGroup(windowId) {
           tabIds: [sameUrlTab.id],
           createProperties: { windowId: win.id }
         });
-        prGroup = (await chrome.tabGroups.query({ windowId: win.id })).find(g => g.id === prGroupId);
         await chrome.tabGroups.update(prGroupId, { title: PR_GROUP_TITLE, color: 'blue' });
       } else {
-        const currentInGroup = await chrome.tabs.query({ groupId: prGroupId });
-        const currentIds = currentInGroup.map(t => t.id);
-        await chrome.tabs.group({ groupId: prGroupId, tabIds: [...currentIds, sameUrlTab.id] });
+        await chrome.tabs.group({ groupId: prGroupId, tabIds: [sameUrlTab.id] });
       }
       inPrGroupByNorm.set(norm, sameUrlTab);
       continue;
@@ -1647,9 +1617,7 @@ async function syncPrTabGroup(windowId) {
       });
       await chrome.tabGroups.update(prGroupId, { title: PR_GROUP_TITLE, color: 'blue' });
     } else {
-      const currentInGroup = await chrome.tabs.query({ groupId: prGroupId });
-      const currentIds = currentInGroup.map(t => t.id);
-      await chrome.tabs.group({ groupId: prGroupId, tabIds: [...currentIds, newTab.id] });
+      await chrome.tabs.group({ groupId: prGroupId, tabIds: [newTab.id] });
     }
     inPrGroupByNorm.set(norm, newTab);
     usedTabIds.add(newTab.id);
@@ -1772,8 +1740,7 @@ async function removeNavigatedTabFromManagedGitHubGroup(tabId, destinationUrl, e
 
   const settings = await chrome.storage.local.get([
     'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
-    'githubLabelGroupNames', 'githubManagedLabelGroupNames',
-    'githubManagedLabelGroupNamesByWindow'
+    'githubLabelGroupNames', 'githubManagedLabelGroupNamesByWindow'
   ]);
   const managedNames = new Set();
   if (settings.closedIssueGroupEnabled === true) {
@@ -1821,7 +1788,6 @@ async function fetchGitHubIssueMetadataForTabs(githubToken, issueTabs) {
   const successfulResults = results.filter(result => !result.error);
   const failedResults = results.filter(result => result.error);
   return {
-    uniqueIssues,
     successfulResults,
     failedResults,
     failedCount: uniqueIssues.length - successfulResults.length,
@@ -1923,8 +1889,7 @@ async function syncGitHubIssueTabGroups(windowId, overrides = {}) {
 async function syncGitHubIssueTabGroupsUnlocked(windowId, overrides = {}) {
   const settings = await chrome.storage.local.get([
     'githubToken', 'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
-    'githubLabelGroupNames', 'githubManagedLabelGroupNames',
-    'githubManagedLabelGroupNamesByWindow'
+    'githubLabelGroupNames', 'githubManagedLabelGroupNamesByWindow'
   ]);
   const closedIssueGroupEnabled = overrides.closedIssueGroupEnabled ?? (settings.closedIssueGroupEnabled === true);
   const githubLabelGroupsEnabled = overrides.githubLabelGroupsEnabled ?? (settings.githubLabelGroupsEnabled === true);
@@ -2153,8 +2118,7 @@ async function syncEnabledGitHubTabGroups(windowId, stages = {}) {
   const includeIssues = stages.includeIssues !== false;
   const settings = await chrome.storage.local.get([
     'githubToken', 'prGroupEnabled', 'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
-    'githubLabelGroupNames', 'githubManagedLabelGroupNames',
-    'githubManagedLabelGroupNamesByWindow'
+    'githubLabelGroupNames', 'githubManagedLabelGroupNamesByWindow'
   ]);
   const targetWindowId = await resolveTargetWindowId(windowId);
   const hasManagedLabels = normalizeGitHubLabelGroupNames([
@@ -2249,7 +2213,7 @@ IMPORTANT: Only assign tabs from the numbered list above. Tabs already in existi
 }
 
 /** Build the tab-categorization prompt shared by every AI provider. */
-function buildOrganizePrompt(tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
+function buildOrganizePrompt(tabs, customInstructions, existingGroups = null, minGroupSize = 1) {
   const tabList = tabs.map((tab, index) => {
     const title = tab.title || 'Untitled';
     const url = tab.url || '';
@@ -2265,10 +2229,6 @@ ${tabList}`;
 
   basePrompt += formatExistingGroupsForPrompt(existingGroups);
 
-  if (splitTabIndices && splitTabIndices.length > 0) {
-    basePrompt += `\n\nSIDE-BY-SIDE SPLITS (these tab pairs/groups MUST stay together in the SAME group - never separate them):
-${splitTabIndices.map((indices, i) => `- Split ${i + 1}: tabs ${indices.join(', ')}`).join('\n')}`;
-  }
 
   const minSizeRule = minGroupSize > 0
     ? `- Each group must contain MORE than ${minGroupSize} tab(s). Never create a group with ${minGroupSize} or fewer tabs; put those tabs in "Misc".\n`
@@ -2276,8 +2236,7 @@ ${splitTabIndices.map((indices, i) => `- Split ${i + 1}: tabs ${indices.join(', 
   basePrompt += `\n\nIMPORTANT RULES:
 ${minSizeRule}- If you have tabs that don't fit into any logical group, put them in "Misc".
 - NEVER add or remove any tabs to groups named "BOOKMARKS" or "PRs". Leave these groups exactly as they are.
-- Pinned tabs are never included in this list. Do not reference or create groups for pinned tabs.
-- Tabs in a side-by-side split must be placed in the SAME group together. Never separate them or unsplit them.
+- Pinned and split-view tabs are never included in this list. Do not reference or create groups for them.
 
 ${customInstructions ? `Additional instructions: ${customInstructions}\n` : ''}
 
@@ -2287,9 +2246,141 @@ Return ONLY a JSON array of objects (no markdown, no prose, no domain shorthand 
   return basePrompt;
 }
 
+function takeSseLine(buffer, atEnd) {
+  for (let i = 0; i < buffer.length; i++) {
+    const character = buffer[i];
+    if (character === '\n') {
+      return { line: buffer.slice(0, i), rest: buffer.slice(i + 1) };
+    }
+    if (character === '\r') {
+      if (i + 1 === buffer.length && !atEnd) return null;
+      const nextIndex = buffer[i + 1] === '\n' ? i + 2 : i + 1;
+      return { line: buffer.slice(0, i), rest: buffer.slice(nextIndex) };
+    }
+  }
+  if (atEnd && buffer) return { line: buffer, rest: '' };
+  return null;
+}
+
+/** Consume JSON server-sent events, including multiline data fields and every valid SSE line ending. */
+async function readSseJsonEvents(response, onEvent) {
+  if (!response.body?.getReader) {
+    throw new Error('The AI provider returned an unreadable streaming response.');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = '';
+  let dataLines = [];
+
+  const dispatchEvent = () => {
+    if (dataLines.length === 0) return;
+    const payload = dataLines.join('\n');
+    dataLines = [];
+    if (!payload || payload === '[DONE]') return;
+    try {
+      onEvent(JSON.parse(payload));
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error('The AI provider returned invalid streaming JSON.');
+      }
+      throw error;
+    }
+  };
+
+  const consumeLine = (line) => {
+    if (line === '') {
+      dispatchEvent();
+      return;
+    }
+    if (line.startsWith(':')) return;
+    const separator = line.indexOf(':');
+    const field = separator === -1 ? line : line.slice(0, separator);
+    if (field !== 'data') return;
+    let value = separator === -1 ? '' : line.slice(separator + 1);
+    if (value.startsWith(' ')) value = value.slice(1);
+    dataLines.push(value);
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffered += decoder.decode(value || new Uint8Array(), { stream: !done });
+    while (true) {
+      const parsedLine = takeSseLine(buffered, done);
+      if (!parsedLine) break;
+      buffered = parsedLine.rest;
+      consumeLine(parsedLine.line);
+    }
+    if (done) break;
+  }
+  dispatchEvent();
+}
+
+async function readOpenAiCompatibleChatResponse(response) {
+  const contentType = (response.headers?.get?.('content-type') || '').toLowerCase();
+  if (!contentType.includes('text/event-stream')) {
+    const data = await response.json();
+    if (data.error) throw new Error(extractProviderErrorMessage(data) || 'The AI provider returned an error.');
+    return openAiCompatibleContentText(data.choices?.[0]?.message?.content).trim();
+  }
+
+  let content = '';
+  await readSseJsonEvents(response, event => {
+    if (event.error) throw new Error(extractProviderErrorMessage(event) || 'The AI provider returned an error.');
+    const choice = event.choices?.[0];
+    content += openAiCompatibleContentText(choice?.delta?.content ?? choice?.message?.content);
+  });
+  return content.trim();
+}
+
+async function readClaudeMessageResponse(response) {
+  const contentType = (response.headers?.get?.('content-type') || '').toLowerCase();
+  if (!contentType.includes('text/event-stream')) {
+    const data = await response.json();
+    if (data.error) throw new Error(extractProviderErrorMessage(data) || 'Claude returned an error.');
+    return (data.content || []).map(block => block?.text || '').join('').trim();
+  }
+
+  let content = '';
+  await readSseJsonEvents(response, event => {
+    if (event.type === 'error' || event.error) {
+      throw new Error(extractProviderErrorMessage(event) || 'Claude returned a streaming error.');
+    }
+    if (event.type === 'content_block_start' && event.content_block?.type === 'text') {
+      content += event.content_block.text || '';
+    }
+    if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+      content += event.delta.text || '';
+    }
+  });
+  return content.trim();
+}
+
+function geminiResponseText(data) {
+  return (data.candidates?.[0]?.content?.parts || [])
+    .map(part => typeof part?.text === 'string' ? part.text : '')
+    .join('');
+}
+
+async function readGeminiResponse(response) {
+  const contentType = (response.headers?.get?.('content-type') || '').toLowerCase();
+  if (!contentType.includes('text/event-stream')) {
+    const data = await response.json();
+    if (data.error) throw new Error(extractProviderErrorMessage(data) || 'Gemini returned an error.');
+    return geminiResponseText(data).trim();
+  }
+
+  let content = '';
+  await readSseJsonEvents(response, event => {
+    if (event.error) throw new Error(extractProviderErrorMessage(event) || 'Gemini returned a streaming error.');
+    content += geminiResponseText(event);
+  });
+  return content.trim();
+}
+
 // Call OpenAI API to categorize tabs
-async function callOpenAI(apiKey, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
-  const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, splitTabIndices, minGroupSize);
+async function callOpenAI(apiKey, model, tabs, customInstructions, existingGroups = null, minGroupSize = 1) {
+  const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, minGroupSize);
 
   const resolvedModel = model || globalThis.getRecommendedModelId('openai');
   const reasoningModel = isOpenAiReasoningModel(resolvedModel);
@@ -2303,6 +2394,7 @@ async function callOpenAI(apiKey, model, tabs, customInstructions, existingGroup
     ],
     // Reasoning models share this budget between hidden reasoning + visible output, so be generous
     max_completion_tokens: reasoningModel ? 16000 : 5000,
+    stream: true,
   };
   if (reasoningModel) {
     // Tab grouping is a structured but low-difficulty task; cap reasoning so the output budget isn't starved
@@ -2325,37 +2417,9 @@ async function callOpenAI(apiKey, model, tabs, customInstructions, existingGroup
     throw new AiProviderError({ provider: 'openai', status: response.status, message, rawBody: errorBody });
   }
 
-  const data = await response.json();
-  const firstChoice = data.choices?.[0];
-  const content = firstChoice?.message?.content?.trim();
-
+  const content = await readOpenAiCompatibleChatResponse(response);
   if (!content) {
-    const finishReason = firstChoice?.finish_reason;
-    const reasoningTokens = data.usage?.completion_tokens_details?.reasoning_tokens;
-    const completionTokens = data.usage?.completion_tokens;
-    console.warn('[Smart Tab Organiser] OpenAI: no content in response. Full response:', {
-      hasChoices: !!data.choices?.length,
-      choicesLength: data.choices?.length ?? 0,
-      firstChoice: firstChoice ? {
-        message: firstChoice.message,
-        finish_reason: finishReason
-      } : null,
-      usage: data.usage,
-      model: data.model
-    });
-    // When a reasoning model hits its budget the API returns finish_reason='length' with all tokens spent on hidden reasoning
-    const truncatedByLength = finishReason === 'length';
-    const looksLikeReasoningExhaustion = truncatedByLength
-      || (reasoningTokens && completionTokens && completionTokens === reasoningTokens);
-    let message;
-    if (looksLikeReasoningExhaustion && reasoningModel) {
-      message = `OpenAI reasoning model "${resolvedModel}" used all ${completionTokens || reasoningTokens || '?'} tokens on hidden reasoning and produced no output. Pick a non-reasoning model (e.g. GPT-4.1) or one with lower reasoning effort.`;
-    } else if (truncatedByLength) {
-      message = `OpenAI response was cut off (finish_reason=length). Try a model with a larger output budget.`;
-    } else {
-      message = `OpenAI returned no content (finish_reason=${finishReason || 'unknown'}).`;
-    }
-    throw new AiProviderError({ provider: 'openai', message, rawBody: { finish_reason: finishReason, usage: data.usage, model: data.model } });
+    throw new AiProviderError({ provider: 'openai', message: `OpenAI returned no content (model=${resolvedModel}).` });
   }
 
   const groups = parseAiGroupsResponse(content);
@@ -2378,8 +2442,8 @@ function isOpenAiReasoningModel(modelId) {
 }
 
 // Call Claude API to categorize tabs
-async function callClaude(apiKey, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
-  const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, splitTabIndices, minGroupSize);
+async function callClaude(apiKey, model, tabs, customInstructions, existingGroups = null, minGroupSize = 1) {
+  const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, minGroupSize);
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -2392,6 +2456,7 @@ async function callClaude(apiKey, model, tabs, customInstructions, existingGroup
     body: JSON.stringify({
       model: model || globalThis.getRecommendedModelId('claude'),
       max_tokens: 5000,
+      stream: true,
       messages: [
         {
           role: 'user',
@@ -2408,18 +2473,8 @@ async function callClaude(apiKey, model, tabs, customInstructions, existingGroup
     throw new AiProviderError({ provider: 'claude', status: response.status, message, rawBody: errorBody });
   }
 
-  const data = await response.json();
-  const content = data.content[0]?.text?.trim();
-
+  const content = await readClaudeMessageResponse(response);
   if (!content) {
-    console.warn('[Smart Tab Organiser] Claude: no content in response. Full response:', {
-      hasContent: !!data.content?.length,
-      contentLength: data.content?.length ?? 0,
-      firstBlock: data.content?.[0] ? { type: data.content[0].type, textLength: data.content[0].text?.length } : null,
-      stop_reason: data.stop_reason,
-      usage: data.usage,
-      model: data.model
-    });
     throw new AiProviderError({ provider: 'claude', message: 'No response from Claude' });
   }
 
@@ -2433,11 +2488,11 @@ async function callClaude(apiKey, model, tabs, customInstructions, existingGroup
 }
 
 // Call Gemini API to categorize tabs
-async function callGemini(apiKey, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
-  const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, splitTabIndices, minGroupSize);
+async function callGemini(apiKey, model, tabs, customInstructions, existingGroups = null, minGroupSize = 1) {
+  const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, minGroupSize);
 
   const modelId = model || globalThis.getRecommendedModelId('gemini');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:streamGenerateContent?alt=sse`;
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -2447,8 +2502,7 @@ async function callGemini(apiKey, model, tabs, customInstructions, existingGroup
     body: JSON.stringify({
       contents: [{ parts: [{ text: basePrompt }] }],
       generationConfig: {
-        maxOutputTokens: 5000,
-        temperature: 0.2
+        maxOutputTokens: 5000
       }
     })
   });
@@ -2460,15 +2514,8 @@ async function callGemini(apiKey, model, tabs, customInstructions, existingGroup
     throw new AiProviderError({ provider: 'gemini', status: response.status, message, rawBody: errorBody });
   }
 
-  const data = await response.json();
-  const content = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-
+  const content = await readGeminiResponse(response);
   if (!content) {
-    console.warn('[Smart Tab Organiser] Gemini: no content in response. Full response:', {
-      hasCandidates: !!data.candidates?.length,
-      finishReason: data.candidates?.[0]?.finishReason,
-      usage: data.usageMetadata
-    });
     throw new AiProviderError({ provider: 'gemini', message: 'No response from Gemini' });
   }
 
@@ -2572,22 +2619,38 @@ async function listLocalModels(rawBaseUrl) {
   }
 }
 
+function openAiCompatibleContentText(value) {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return '';
+  return value.map(part => {
+    if (typeof part === 'string') return part;
+    return typeof part?.text === 'string' ? part.text : '';
+  }).join('');
+}
+
+
 /**
  * Call a local OpenAI-compatible server (Ollama, LM Studio, llama.cpp, vLLM) to categorize tabs.
+ * Streaming makes response headers arrive before Chrome's 30-second service-worker fetch limit.
  * Local models are less reliable at emitting bare JSON, so one stricter retry is attempted.
  */
-async function callLocalModel(rawBaseUrl, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
+async function callLocalModel(rawBaseUrl, model, tabs, customInstructions, existingGroups = null, minGroupSize = 1) {
   const baseUrl = normalizeLocalBaseUrl(rawBaseUrl);
   requireAllowedLocalModelUrl(baseUrl);
-  const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, splitTabIndices, minGroupSize);
+  const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, minGroupSize);
   const retryReminder = '\n\nYour previous reply was not valid JSON. Reply with ONLY the JSON array: start with [ and end with ]. No explanation, no markdown code fences.';
 
   let lastError = null;
+  const deadline = Date.now() + OLLAMA_TIMEOUT_MS;
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const prompt = attempt === 0 ? basePrompt : basePrompt + retryReminder;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error(`Local model timed out after ${Math.round(OLLAMA_TIMEOUT_MS / 1000)}s. Try a smaller model, or organize fewer tabs.`);
+    }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), remainingMs);
 
     let content;
     try {
@@ -2600,7 +2663,7 @@ async function callLocalModel(rawBaseUrl, model, tabs, customInstructions, exist
           messages: [{ role: 'user', content: prompt }],
           max_tokens: 5000,
           temperature: 0.2,
-          stream: false
+          stream: true
         })
       });
 
@@ -2610,8 +2673,7 @@ async function callLocalModel(rawBaseUrl, model, tabs, customInstructions, exist
         throw new Error(error.error?.message || error.message || `Local model server error: ${response.status}`);
       }
 
-      const data = await response.json();
-      content = data.choices?.[0]?.message?.content?.trim();
+      content = await readOpenAiCompatibleChatResponse(response);
     } catch (error) {
       throw localServerError(error, baseUrl);
     } finally {
@@ -2674,7 +2736,7 @@ async function checkChromeAiAvailability() {
     return {
       available: false,
       state,
-      message: 'Chrome built-in AI is unsupported on this device. It requires ~22 GB free disk space and either 4 GB+ of VRAM or 16 GB+ of RAM.'
+      message: 'Chrome built-in AI is unsupported on this device. It requires ~22 GB free disk space, more than 4 GB of VRAM, or 16 GB of RAM and at least 4 CPU cores.'
     };
   }
   if (state === 'downloadable') {
@@ -2746,7 +2808,7 @@ function mergeGroupBatches(batches) {
  * Categorize tabs with Chrome's on-device model. Nothing leaves the machine.
  * Tabs are batched to fit the small context window; batch results are merged by group name.
  */
-async function callChromeAI(tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
+async function callChromeAI(tabs, customInstructions, existingGroups = null, minGroupSize = 1) {
   await ensureChromeAiReady();
 
   const batches = [];
@@ -2756,16 +2818,7 @@ async function callChromeAI(tabs, customInstructions, existingGroups = null, spl
 
   const results = [];
   for (const batch of batches) {
-    const batchEnd = batch.start + batch.tabs.length; // exclusive, 0-based
-    // Remap global 1-based split indices to this batch; splits spanning batches are
-    // reunited later by organizeTabs().
-    const batchSplits = (splitTabIndices || [])
-      .map(indices => indices
-        .filter(idx => idx > batch.start && idx <= batchEnd)
-        .map(idx => idx - batch.start))
-      .filter(indices => indices.length >= 2);
-
-    const prompt = buildOrganizePrompt(batch.tabs, customInstructions, existingGroups, batchSplits, minGroupSize);
+    const prompt = buildOrganizePrompt(batch.tabs, customInstructions, existingGroups, minGroupSize);
 
     const session = await createChromeAiSession();
     let content;
@@ -2821,7 +2874,7 @@ async function sortTabsWithinGroupsByTitle(windowId, alwaysPreservedGroupNames) 
 }
 
 /** Remove URL components that usually contain tracking values, tokens, or private state. */
-function sanitizeUrlForCloudAi(rawUrl) {
+function sanitizeUrlForAi(rawUrl) {
   try {
     const url = new URL(rawUrl);
     url.username = '';
@@ -2834,44 +2887,44 @@ function sanitizeUrlForCloudAi(rawUrl) {
   }
 }
 
-function sanitizeTabsForCloudAi(tabs) {
+function sanitizeTabsForAi(tabs) {
   return tabs.map(tab => ({
     ...tab,
-    url: sanitizeUrlForCloudAi(tab.url || '')
+    url: sanitizeUrlForAi(tab.url || '')
   }));
 }
 
 /** Dispatch to the right provider-specific call. Wraps non-AiProviderError throws so we always get structured errors. */
-async function callProvider(provider, settings, tabs, instructions, existingGroupsForAI, splitTabIndices, minTabs) {
+async function callProvider(provider, settings, tabs, instructions, existingGroupsForAI, minTabs) {
   try {
-    const promptTabs = isOnDeviceProvider(provider) ? tabs : sanitizeTabsForCloudAi(tabs);
+    const promptTabs = sanitizeTabsForAi(tabs);
     if (provider === 'openai') {
       const key = settings.openaiKey?.trim();
       if (!key) throw new AiProviderError({ provider, message: 'OpenAI API key not configured' });
       const model = globalThis.resolveStoredModel('openai', settings.openaiModel);
-      return await callOpenAI(key, model, promptTabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+      return await callOpenAI(key, model, promptTabs, instructions, existingGroupsForAI, minTabs);
     }
     if (provider === 'claude') {
       const key = settings.claudeKey?.trim();
       if (!key) throw new AiProviderError({ provider, message: 'Claude API key not configured' });
       const model = globalThis.resolveStoredModel('claude', settings.claudeModel);
-      return await callClaude(key, model, promptTabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+      return await callClaude(key, model, promptTabs, instructions, existingGroupsForAI, minTabs);
     }
     if (provider === 'gemini') {
       const key = settings.geminiKey?.trim();
       if (!key) throw new AiProviderError({ provider, message: 'Gemini API key not configured' });
       const model = globalThis.resolveStoredModel('gemini', settings.geminiModel);
-      return await callGemini(key, model, promptTabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+      return await callGemini(key, model, promptTabs, instructions, existingGroupsForAI, minTabs);
     }
     if (provider === 'chrome-ai') {
       // On-device: no key, nothing leaves the machine.
-      return await callChromeAI(promptTabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+      return await callChromeAI(promptTabs, instructions, existingGroupsForAI, minTabs);
     }
     if (provider === 'local') {
       const model = settings.localModel?.trim();
       if (!model) throw new AiProviderError({ provider, message: 'No local model name configured' });
       const baseUrl = settings.localBaseUrl?.trim() || DEFAULT_OLLAMA_BASE_URL;
-      return await callLocalModel(baseUrl, model, promptTabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+      return await callLocalModel(baseUrl, model, promptTabs, instructions, existingGroupsForAI, minTabs);
     }
     throw new AiProviderError({ provider, message: `Unknown AI provider: ${provider}` });
   } catch (err) {
@@ -2919,15 +2972,12 @@ function normalizeFallbackOrder(saved) {
  * then each eligible provider in order.
  *
  * Eligibility encodes the privacy boundary of the primary choice:
- * - A cloud primary falls back to the other cloud providers you hold keys for. It never
- *   silently switches to an on-device provider (surprise latency, possible model download).
- * - An on-device primary falls back to the other on-device provider, since both keep tab
- *   data on the machine: the local server needs a model name configured, and Chrome
- *   built-in AI only joins when its model is already downloaded — a fallback must never
- *   trigger a multi-gigabyte download the user didn't ask for.
- * - Cloud providers join an on-device chain only with the explicit aiAllowCloudFallback
- *   opt-in, because that fallback sends tab data off the machine. Within the eligible
- *   set, the user's order wins.
+ * - A cloud primary falls back to other configured cloud providers. It never switches
+ *   to a local provider because that can add latency or trigger a model download.
+ * - A local primary falls back to the other local provider. The loopback server needs a
+ *   model name, and Chrome built-in AI joins only after its model is downloaded.
+ * - Cloud providers join a local chain only with the explicit aiAllowCloudFallback opt-in.
+ *   Within the eligible set, the user's order wins.
  *
  * Statuses: 'primary' | 'ready' (in the chain) | 'disabled' | 'no-key' |
  * 'not-downloaded' | 'no-model-name' | 'cloud-opt-in-off' | 'not-after-cloud'.
@@ -2936,12 +2986,12 @@ function normalizeFallbackOrder(saved) {
 async function describeProviderChain(settings) {
   const primary = settings.aiProvider || 'openai';
   const order = normalizeFallbackOrder(settings.aiFallbackOrder);
-  const fallbackEnabled = settings.aiFallbackEnabled !== false;
-  const onDevicePrimary = isOnDeviceProvider(primary);
+  const fallbackEnabled = settings.aiFallbackEnabled === true;
+  const localPrimary = isLocalProvider(primary);
 
   // Only probe Nano availability when it could actually join the chain.
   let chromeAiReady = false;
-  if (fallbackEnabled && onDevicePrimary && primary !== 'chrome-ai') {
+  if (fallbackEnabled && localPrimary && primary !== 'chrome-ai') {
     const status = await checkChromeAiAvailability();
     chromeAiReady = status.state === 'available';
   }
@@ -2950,7 +3000,7 @@ async function describeProviderChain(settings) {
   const entries = order.map((p) => {
     if (p === primary) return { provider: p, status: 'primary' };
     if (!fallbackEnabled) return { provider: p, status: 'disabled' };
-    if (onDevicePrimary) {
+    if (localPrimary) {
       if (p === 'local') {
         if (!settings.localModel?.trim()) return { provider: p, status: 'no-model-name' };
       } else if (p === 'chrome-ai') {
@@ -2960,14 +3010,14 @@ async function describeProviderChain(settings) {
         if (!providerHasKey(p, settings)) return { provider: p, status: 'no-key' };
       }
     } else {
-      if (isOnDeviceProvider(p)) return { provider: p, status: 'not-after-cloud' };
+      if (isLocalProvider(p)) return { provider: p, status: 'not-after-cloud' };
       if (!providerHasKey(p, settings)) return { provider: p, status: 'no-key' };
     }
     chain.push(p);
     return { provider: p, status: 'ready' };
   });
 
-  return { primary, order, chain, entries, fallbackEnabled, onDevicePrimary };
+  return { primary, order, chain, entries, fallbackEnabled, localPrimary };
 }
 
 /** Ordered list of providers to attempt: primary first, then eligible fallbacks in the user's order. */
@@ -2991,8 +3041,7 @@ async function organizeTabs(
       'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled', 'aiAllowCloudFallback',
       'aiFallbackOrder', 'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
       'localBaseUrl', 'localModel', 'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
-      'githubLabelGroupNames', 'githubManagedLabelGroupNames',
-      'githubManagedLabelGroupNamesByWindow'
+      'githubLabelGroupNames', 'githubManagedLabelGroupNamesByWindow'
     ]);
 
     // Use custom instructions from the action, or fall back to the saved settings.
@@ -3007,8 +3056,8 @@ async function organizeTabs(
       instructions = [instructions, managedGroupInstruction].filter(Boolean).join('\n');
     }
 
-    // Validate that at least one provider in the chain is configured
-    // (on-device providers need no API key: chrome-ai needs nothing, local needs a model name)
+    // Validate that at least one provider in the chain is configured.
+    // Local providers need no provider key: Chrome AI needs nothing; loopback needs a model name.
     const providerChain = await buildProviderChain(settings);
     const usableChain = providerChain.filter((p) => providerIsConfigured(p, settings));
     if (usableChain.length === 0) {
@@ -3131,16 +3180,6 @@ async function organizeTabs(
       };
     }
 
-    // Build split view info: tabs with same splitViewId must stay together (Chrome 140+)
-    const splitMap = new Map();
-    tabsForAI.forEach((tab, index) => {
-      const svId = tab.splitViewId;
-      if (typeof svId === 'number' && svId !== SPLIT_VIEW_NONE) {
-        if (!splitMap.has(svId)) splitMap.set(svId, []);
-        splitMap.get(svId).push(index + 1); // 1-based index for AI
-      }
-    });
-    const splitTabIndices = Array.from(splitMap.values()).filter(indices => indices.length >= 2);
 
     // Call AI API (with fallback chain) — try primary first, then configured fallbacks
     let groups = null;
@@ -3150,7 +3189,7 @@ async function organizeTabs(
 
     for (const provider of usableChain) {
       try {
-        const result = await callProvider(provider, settings, tabsForAI, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+        const result = await callProvider(provider, settings, tabsForAI, instructions, existingGroupsForAI, minTabs);
         if (!Array.isArray(result) || result.length === 0) {
           throw new AiProviderError({ provider, message: `Invalid response from ${providerLabel(provider)}: expected array of groups` });
         }
@@ -3226,28 +3265,6 @@ async function organizeTabs(
       groups = groups.filter(g => (g.tabIndices || []).length > 0);
     }
 
-    // Ensure split tabs stay together: merge any split that AI put in different groups
-    for (const splitIndices of splitTabIndices) {
-      const indexToGroup = new Map();
-      groups.forEach((g, i) => {
-        (g.tabIndices || []).forEach(idx => indexToGroup.set(idx, i));
-      });
-      const groupsWithSplitTabs = [...new Set(
-        splitIndices.map(idx => indexToGroup.get(idx)).filter(i => i !== undefined)
-      )];
-      if (groupsWithSplitTabs.length > 1) {
-        const targetIdx = groupsWithSplitTabs[0];
-        const targetGroup = groups[targetIdx];
-        for (const idx of splitIndices) {
-          if (!targetGroup.tabIndices.includes(idx)) {
-            targetGroup.tabIndices.push(idx);
-          }
-        }
-        for (const gi of groupsWithSplitTabs.slice(1)) {
-          groups[gi].tabIndices = (groups[gi].tabIndices || []).filter(i => !splitIndices.includes(i));
-        }
-      }
-    }
 
     // Skip tabs that moved or changed while an AI provider processed the request.
     const currentWindowId = validTabs[0].windowId;
@@ -3354,8 +3371,7 @@ async function organizeTabs(
     }
 
     // Second pass: collect any remaining ungrouped tabs (shouldn't happen, but safety check)
-    const allTabIdsSet = new Set(tabsForAI.map(t => t.id));
-    const usedTabIdsSet = new Set(Array.from(usedTabIndices));
+    const usedTabIdsSet = new Set(usedTabIndices);
     const remainingTabs = tabsForAI.filter(tab => 
       !usedTabIdsSet.has(tab.id) && 
       (!tab.groupId || tab.groupId === -1)
@@ -3458,8 +3474,7 @@ async function ungroupTabs() {
     const groups = await chrome.tabGroups.query({ windowId: tabs[0].windowId });
     const managedGroupSettings = await chrome.storage.local.get([
       'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
-      'githubLabelGroupNames', 'githubManagedLabelGroupNames',
-      'githubManagedLabelGroupNamesByWindow'
+      'githubLabelGroupNames', 'githubManagedLabelGroupNamesByWindow'
     ]);
     const alwaysPreservedGroupNames = getAlwaysPreservedGroupNames(managedGroupSettings, tabs[0].windowId);
     const alwaysPreservedIds = new Set(
@@ -3492,29 +3507,7 @@ async function ungroupTabs() {
 }
 
 // Handle messages from extension pages.
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'closeDuplicates') {
-    (async () => {
-      const targetWindowId = await resolveTargetWindowId(request.windowId);
-      const githubPrSync = await syncEnabledGitHubTabGroups(targetWindowId, {
-        includePr: true,
-        includeIssues: false,
-      }).catch(() => ({ stopRemainingSyncs: false }));
-      const result = await closeDuplicates(request.ignoreQuery, request.ignoreHash, request.reloadTabs, targetWindowId);
-      if (result.success) {
-        await syncEnabledGitHubTabGroups(targetWindowId, {
-          includePr: false,
-          includeIssues: true,
-          blockedByEarlierSync: githubPrSync.stopRemainingSyncs,
-        }).catch(() => {});
-      }
-      return result;
-    })()
-      .then(result => sendResponse(result))
-      .catch(error => sendResponse({ success: false, error: error.message }));
-    return true; // Keep the message channel open for async response
-  }
-  
+chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   if (request.action === 'reloadAllTabs') {
     reloadAllTabs(request.windowId)
       .then(result => sendResponse(result))

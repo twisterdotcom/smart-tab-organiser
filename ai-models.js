@@ -1,70 +1,61 @@
 /**
- * AI provider model catalog and recommended defaults (options page + service worker).
+ * Current AI provider models and recommended defaults (options page + service worker).
+ * Verified against provider documentation on 2026-08-20.
  */
 (function (g) {
   'use strict';
 
-  /** @type {Record<string, { recommended: string, models: Array<{ id: string, label: string, description?: string, legacy?: boolean }> }>} */
+  /** @type {Record<string, { recommended: string, models: Array<{ id: string, label: string, description?: string }> }>} */
   var CATALOG = {
     openai: {
       recommended: 'gpt-5.6-terra',
       models: [
-        { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', description: 'Flagship reasoning & agentic work' },
-        { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', description: 'Balanced, cost-efficient' },
-        { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', description: 'Fastest, most affordable' },
-        { id: 'gpt-5.6', label: 'GPT-5.6', description: 'Alias for Sol' },
-        { id: 'gpt-5.5', label: 'GPT-5.5', description: 'Previous generation' },
-        { id: 'gpt-5.4', label: 'GPT-5.4', description: 'Previous generation' },
-        { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini', description: 'Previous balanced tier' },
-        { id: 'gpt-5.4-nano', label: 'GPT-5.4 nano', description: 'Previous fast tier' },
-        { id: 'gpt-5.2', label: 'GPT-5.2', description: 'Previous generation', legacy: true },
-        { id: 'gpt-5.2-pro', label: 'GPT-5.2 Pro', description: 'Previous high-precision tier', legacy: true },
-        { id: 'gpt-5-mini', label: 'GPT-5 mini', description: 'Previous balanced tier', legacy: true },
-        { id: 'gpt-5-nano', label: 'GPT-5 nano', description: 'Previous fast tier', legacy: true },
-        { id: 'gpt-5', label: 'GPT-5', description: 'Previous reasoning model', legacy: true },
-        { id: 'gpt-4.1', label: 'GPT-4.1', description: 'Non-reasoning', legacy: true },
-        { id: 'gpt-4.1-mini', label: 'GPT-4.1 mini', description: 'Fast, cost-effective', legacy: true },
-        { id: 'gpt-4.1-nano', label: 'GPT-4.1 nano', description: 'Lightweight', legacy: true },
-        { id: 'gpt-4o', label: 'GPT-4o', description: 'Legacy', legacy: true },
-        { id: 'gpt-4o-mini', label: 'GPT-4o mini', description: 'Legacy', legacy: true },
+        { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', description: 'Flagship model for complex work' },
+        { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', description: 'Balanced intelligence and cost' },
+        { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', description: 'Fast, cost-sensitive workloads' },
+        { id: 'gpt-5.6', label: 'GPT-5.6', description: 'Alias for GPT-5.6 Sol' },
+        { id: 'gpt-5.5', label: 'GPT-5.5', description: 'Supported previous generation' },
+        { id: 'gpt-5.4', label: 'GPT-5.4', description: 'Supported previous generation' },
+        { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini', description: 'Supported balanced tier' },
+        { id: 'gpt-5.4-nano', label: 'GPT-5.4 nano', description: 'Supported fast tier' },
+        { id: 'gpt-5.2', label: 'GPT-5.2', description: 'Supported previous generation' },
+        { id: 'gpt-4.1', label: 'GPT-4.1', description: 'Supported non-reasoning model' },
+        { id: 'gpt-4.1-mini', label: 'GPT-4.1 mini', description: 'Fast non-reasoning model' },
+        { id: 'gpt-4o', label: 'GPT-4o', description: 'Supported legacy model' },
+        { id: 'gpt-4o-mini', label: 'GPT-4o mini', description: 'Supported legacy model' },
       ],
     },
     claude: {
       recommended: 'claude-haiku-4-5-20251001',
       models: [
-        { id: 'claude-fable-5', label: 'Claude Fable 5', description: 'Most capable, long-running agents' },
-        { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', description: 'Frontier agentic & enterprise' },
-        { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', description: 'Best speed & intelligence balance' },
-        { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', description: 'Fast, cost-effective' },
-        { id: 'claude-opus-4-7', label: 'Claude Opus 4.7', description: 'Previous generation' },
-        { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', description: 'Previous generation' },
-        { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', description: 'Previous generation' },
-        { id: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5', description: 'Previous generation' },
-        { id: 'claude-opus-4-5-20251101', label: 'Claude Opus 4.5', description: 'Previous generation', legacy: true },
-        { id: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1', description: 'Deprecated Aug 2026', legacy: true },
-        { id: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku', description: 'Retired', legacy: true },
-        { id: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet', description: 'Retired', legacy: true },
+        { id: 'claude-fable-5', label: 'Claude Fable 5', description: 'Most capable widely released model' },
+        { id: 'claude-opus-5', label: 'Claude Opus 5', description: 'Complex agentic and enterprise work' },
+        { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', description: 'Active previous generation' },
+        { id: 'claude-opus-4-7', label: 'Claude Opus 4.7', description: 'Active previous generation' },
+        { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', description: 'Active previous generation' },
+        { id: 'claude-opus-4-5-20251101', label: 'Claude Opus 4.5', description: 'Active previous generation' },
+        { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', description: 'Fast with high intelligence' },
+        { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', description: 'Active previous generation' },
+        { id: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5', description: 'Active previous generation' },
+        { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', description: 'Fastest, cost-effective model' },
       ],
     },
     gemini: {
-      recommended: 'gemini-3.5-flash',
+      recommended: 'gemini-3.7-flash',
       models: [
-        { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', description: 'Best price-performance, agentic & coding' },
-        { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite', description: 'High-volume, budget-friendly' },
-        { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro', description: 'Preview, advanced reasoning' },
-        { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash', description: 'Preview' },
-        { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', description: 'Deprecating Oct 2026' },
-        { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', description: 'Deprecating Oct 2026' },
-        { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', description: 'Deprecating Oct 2026' },
-        { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', description: 'Shut down', legacy: true },
-        { id: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash-Lite', description: 'Shut down', legacy: true },
-        { id: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash', description: 'Legacy', legacy: true },
-        { id: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro', description: 'Legacy', legacy: true },
+        { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash', description: 'Latest and most capable Flash model' },
+        { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash', description: 'Balanced speed and multimodal capability' },
+        { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', description: 'Stable high-throughput baseline' },
+        { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite', description: 'Fast, cost-effective high-volume model' },
+        { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite', description: 'Stable previous budget tier' },
+        { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro', description: 'Current preview reasoning model' },
+        { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash', description: 'Supported preview model' },
+        { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', description: 'Stable previous generation' },
+        { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', description: 'Stable previous budget tier' },
+        { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', description: 'Stable previous reasoning model' },
       ],
     },
   };
-
-  g.AI_MODEL_CATALOG = CATALOG;
 
   g.getRecommendedModelId = function (provider) {
     return CATALOG[provider] ? CATALOG[provider].recommended : null;
@@ -100,9 +91,6 @@
     if (model.id === recommended) {
       return text + ' — Recommended';
     }
-    if (model.legacy) {
-      return text + ' — Legacy';
-    }
     return text;
   };
 
@@ -116,9 +104,6 @@
       var opt = document.createElement('option');
       opt.value = model.id;
       opt.textContent = g.formatModelOptionLabel(model, provider);
-      if (model.legacy) {
-        opt.dataset.legacy = 'true';
-      }
       selectEl.appendChild(opt);
     }
     selectEl.value = resolved;
@@ -132,4 +117,4 @@
     if (!entry) return id;
     return entry.label + (entry.description ? ' (' + entry.description + ')' : '');
   };
-})(typeof globalThis !== 'undefined' ? globalThis : self);
+})(globalThis);

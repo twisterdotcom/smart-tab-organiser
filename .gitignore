@@ -6,10 +6,11 @@
 # Node modules (if you add any)
 node_modules/
 
-# IDE
+# IDE and local agent settings
 .vscode/
 .idea/
 .cursor/
+.claude/
 
 # Logs
 *.log
