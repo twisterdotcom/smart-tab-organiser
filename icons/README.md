@@ -1,10 +1,17 @@
-# Icons
+# Extension icons
 
-Place your extension icons here:
-- `icon16.png` - 16x16 pixels (toolbar)
-- `icon48.png` - 48x48 pixels (extension management page)
-- `icon128.png` - 128x128 pixels (Chrome Web Store)
+This directory contains the PNG icons that Chrome loads from `manifest.json`.
 
-You can create these using any image editor or online icon generator.
-For now, you can use placeholder images or create simple colored squares.
+- `icon16.png`: Toolbar icon at `16x16` pixels.
+- `icon48.png`: Extension-management icon at `48x48` pixels.
+- `icon128.png`: Chrome Web Store icon at `128x128` pixels.
 
+The high-resolution source is `store-assets/source/icon-1024.png`.
+
+On macOS, regenerate all runtime icons from the repository root:
+
+```sh
+./scripts/generate-icons.sh
+```
+
+Then build the release ZIP. The release builder stops if an icon has an incorrect size.

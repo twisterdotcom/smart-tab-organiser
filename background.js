@@ -308,7 +308,7 @@ function shortFailureLabel(classification) {
   return stripped.replace(/\.$/, '');
 }
 
-/** Compose a single message describing all provider failures (for notifications / popup). */
+/** Compose a single message describing all provider failures for extension UI. */
 function buildMultiProviderErrorMessage(failures) {
   if (!failures || failures.length === 0) return 'AI organization failed.';
   if (failures.length === 1) {
@@ -1402,10 +1402,25 @@ async function fetchOpenPrUrls(githubToken) {
   }
 }
 
-// Build normalized PR URL for matching (github.com/owner/repo/pull/number, no hash/query)
-function normalizedPrUrl(url, ignoreQuery, ignoreHash) {
-  if (!url || !url.includes('github.com') || !url.includes('/pull/')) return null;
-  return normalizeUrl(url, ignoreQuery !== false, ignoreHash !== false);
+// Build a canonical GitHub PR URL for matching: github.com/owner/repo/pull/number.
+function normalizedPrUrl(rawUrl, ignoreQuery, ignoreHash) {
+  if (!isValidUrl(rawUrl)) return null;
+  try {
+    const url = new URL(rawUrl);
+    const hostname = url.hostname.toLowerCase();
+    if (hostname !== 'github.com' && hostname !== 'www.github.com') return null;
+
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length < 4 || parts[2].toLowerCase() !== 'pull' || !/^\d+$/.test(parts[3])) {
+      return null;
+    }
+
+    url.hostname = 'github.com';
+    url.pathname = `/${parts.slice(0, 4).join('/')}`;
+    return normalizeUrl(url.toString(), ignoreQuery !== false, ignoreHash !== false);
+  } catch {
+    return null;
+  }
 }
 
 // Create or get PR tab group in window; sync tabs to match prUrls. Returns { success, message?, error? }.
@@ -1419,16 +1434,27 @@ async function syncPrTabGroup(windowId) {
   const { prUrls, error: fetchError } = await fetchOpenPrUrls(settings.githubToken);
   if (fetchError) return { success: false, error: fetchError };
   if (prUrls.length === 0) {
-    // No open PRs: ensure group exists but is empty (or remove tabs that are no longer PRs)
+    // Clear the managed group without closing the user's tabs.
     const groups = await chrome.tabGroups.query({ windowId: win.id });
     const prGroup = groups.find(g => (g.title || '').trim() === PR_GROUP_TITLE);
+    let ungroupedCount = 0;
     if (prGroup) {
       const existingTabs = await chrome.tabs.query({ groupId: prGroup.id });
-      for (const tab of existingTabs) {
-        await chrome.tabs.remove(tab.id);
+      const existingTabIds = existingTabs
+        .filter(tab => !isInSplitView(tab))
+        .filter(tab => normalizedPrUrl(tab.pendingUrl || tab.url || '', true, true))
+        .map(tab => tab.id);
+      if (existingTabIds.length > 0) {
+        await chrome.tabs.ungroup(existingTabIds);
+        ungroupedCount = existingTabIds.length;
       }
     }
-    return { success: true, message: 'No open PRs; PR group cleared.' };
+    return {
+      success: true,
+      message: ungroupedCount > 0
+        ? `No open PRs; removed ${ungroupedCount} tab(s) from the PRs group without closing them.`
+        : 'No open PRs; the PRs group is empty.'
+    };
   }
 
   const ignoreQuery = settings.ignoreQuery !== false;
@@ -1514,17 +1540,21 @@ async function syncPrTabGroup(windowId) {
     usedTabIds.add(newTab.id);
   }
 
-  // Remove from PR group any tabs that are no longer in prUrls. Tabs placed there by
-  // this sync are always kept: a freshly created tab may not have loaded yet, leaving
-  // its url empty (only pendingUrl set), and must not be treated as a non-PR tab.
+  // Ungroup tabs that no longer match an open PR. Never close a tab during PR sync.
+  // Tabs placed there by this sync are always kept: a freshly created tab may only
+  // have pendingUrl, and must not be treated as a stale PR tab.
   if (prGroupId != null) {
     const inPr = await chrome.tabs.query({ groupId: prGroupId });
+    const staleTabIds = [];
     for (const tab of inPr) {
-      if (usedTabIds.has(tab.id)) continue;
+      if (usedTabIds.has(tab.id) || isInSplitView(tab)) continue;
       const norm = normalizedPrUrl(tab.pendingUrl || tab.url || '', ignoreQuery, ignoreHash);
-      if (!norm || !targetNorm.has(norm)) {
-        await chrome.tabs.remove(tab.id);
+      if (norm && !targetNorm.has(norm)) {
+        staleTabIds.push(tab.id);
       }
+    }
+    if (staleTabIds.length > 0) {
+      await chrome.tabs.ungroup(staleTabIds);
     }
   }
 
@@ -2054,13 +2084,23 @@ function normalizeLocalBaseUrl(rawUrl) {
   return url;
 }
 
-/** True if the address points at this machine, which is all the manifest grants access to. */
-function isLoopbackUrl(url) {
+/** True when the address exactly matches a loopback origin allowed by the manifest. */
+function isAllowedLocalModelUrl(url) {
   try {
-    const { hostname } = new URL(url);
-    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' && (
+      parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1'
+    );
   } catch {
     return false;
+  }
+}
+
+function requireAllowedLocalModelUrl(baseUrl) {
+  if (!isAllowedLocalModelUrl(baseUrl)) {
+    throw new Error(
+      'Local model address must use http://localhost or http://127.0.0.1. Network hosts are not allowed.'
+    );
   }
 }
 
@@ -2070,7 +2110,7 @@ function localServerError(error, baseUrl) {
     return new Error(`Local model timed out after ${Math.round(OLLAMA_TIMEOUT_MS / 1000)}s. Try a smaller model, or organize fewer tabs.`);
   }
   if (error instanceof TypeError) {
-    if (!isLoopbackUrl(baseUrl)) {
+    if (!isAllowedLocalModelUrl(baseUrl)) {
       return new Error(
         `Could not reach ${baseUrl}. This extension only has permission for localhost and 127.0.0.1, so a model server on ` +
         `another host or network address will be blocked.`
@@ -2087,6 +2127,7 @@ function localServerError(error, baseUrl) {
 /** List the models a local OpenAI-compatible server currently has available. */
 async function listLocalModels(rawBaseUrl) {
   const baseUrl = normalizeLocalBaseUrl(rawBaseUrl);
+  requireAllowedLocalModelUrl(baseUrl);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
@@ -2113,6 +2154,7 @@ async function listLocalModels(rawBaseUrl) {
  */
 async function callLocalModel(rawBaseUrl, model, tabs, customInstructions, existingGroups = null, splitTabIndices = null, minGroupSize = 1) {
   const baseUrl = normalizeLocalBaseUrl(rawBaseUrl);
+  requireAllowedLocalModelUrl(baseUrl);
   const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, splitTabIndices, minGroupSize);
   const retryReminder = '\n\nYour previous reply was not valid JSON. Reply with ONLY the JSON array: start with [ and end with ]. No explanation, no markdown code fences.';
 
@@ -2354,36 +2396,58 @@ async function sortTabsWithinGroupsByTitle(windowId, alwaysPreservedGroupNames) 
   }
 }
 
+/** Remove URL components that usually contain tracking values, tokens, or private state. */
+function sanitizeUrlForCloudAi(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+function sanitizeTabsForCloudAi(tabs) {
+  return tabs.map(tab => ({
+    ...tab,
+    url: sanitizeUrlForCloudAi(tab.url || '')
+  }));
+}
+
 /** Dispatch to the right provider-specific call. Wraps non-AiProviderError throws so we always get structured errors. */
 async function callProvider(provider, settings, tabs, instructions, existingGroupsForAI, splitTabIndices, minTabs) {
   try {
+    const promptTabs = isOnDeviceProvider(provider) ? tabs : sanitizeTabsForCloudAi(tabs);
     if (provider === 'openai') {
       const key = settings.openaiKey?.trim();
       if (!key) throw new AiProviderError({ provider, message: 'OpenAI API key not configured' });
       const model = globalThis.resolveStoredModel('openai', settings.openaiModel);
-      return await callOpenAI(key, model, tabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+      return await callOpenAI(key, model, promptTabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
     }
     if (provider === 'claude') {
       const key = settings.claudeKey?.trim();
       if (!key) throw new AiProviderError({ provider, message: 'Claude API key not configured' });
       const model = globalThis.resolveStoredModel('claude', settings.claudeModel);
-      return await callClaude(key, model, tabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+      return await callClaude(key, model, promptTabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
     }
     if (provider === 'gemini') {
       const key = settings.geminiKey?.trim();
       if (!key) throw new AiProviderError({ provider, message: 'Gemini API key not configured' });
       const model = globalThis.resolveStoredModel('gemini', settings.geminiModel);
-      return await callGemini(key, model, tabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+      return await callGemini(key, model, promptTabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
     }
     if (provider === 'chrome-ai') {
       // On-device: no key, nothing leaves the machine.
-      return await callChromeAI(tabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+      return await callChromeAI(promptTabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
     }
     if (provider === 'local') {
       const model = settings.localModel?.trim();
       if (!model) throw new AiProviderError({ provider, message: 'No local model name configured' });
       const baseUrl = settings.localBaseUrl?.trim() || DEFAULT_OLLAMA_BASE_URL;
-      return await callLocalModel(baseUrl, model, tabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
+      return await callLocalModel(baseUrl, model, promptTabs, instructions, existingGroupsForAI, splitTabIndices, minTabs);
     }
     throw new AiProviderError({ provider, message: `Unknown AI provider: ${provider}` });
   } catch (err) {
@@ -2968,7 +3032,7 @@ async function ungroupTabs() {
   }
 }
 
-// Handle messages from popup
+// Handle messages from extension pages.
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'closeDuplicates') {
     (async () => {
@@ -3004,8 +3068,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     (async () => {
       const targetWindowId = await resolveTargetWindowId(request.windowId);
       await syncEnabledGitHubTabGroups(targetWindowId).catch(() => {});
-      // The popup doesn't send preserveGroupsMinTabs; fall back to the saved setting
-      // instead of silently using 1.
+      // A caller can omit preserveGroupsMinTabs. Use the saved value instead of 1.
       let minTabsRaw = request.preserveGroupsMinTabs;
       if (minTabsRaw === undefined) {
         minTabsRaw = (await chrome.storage.local.get(['preserveGroupsMinTabs'])).preserveGroupsMinTabs;

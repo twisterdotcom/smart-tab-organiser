@@ -17,6 +17,9 @@ node_modules/
 # Build artifacts
 *.zip
 dist/
-build/# Environment files
+build/
+.cws-*-profile/
+
+# Environment files
 .env
 .env.local

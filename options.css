@@ -22,22 +22,12 @@
 }
 
 body {
-  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   background: var(--bg);
   color: var(--text);
   line-height: 1.6;
 }
 
-@keyframes containerEnter {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
 
 .container {
   max-width: min(1100px, 96vw);
@@ -46,7 +36,6 @@ body {
   background: var(--surface);
   min-height: 100vh;
   box-shadow: var(--shadow-sm);
-  animation: containerEnter 0.35s ease-out;
 }
 
 @media (min-width: 1400px) {
@@ -390,6 +379,17 @@ footer {
   font-size: 13px;
 }
 
+.footer-links {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.footer-links a {
+  color: var(--accent);
+}
+
 .input-with-toggle {
   display: flex;
   align-items: center;
@@ -545,6 +545,21 @@ footer {
   color: var(--text-muted);
   text-transform: none;
   letter-spacing: normal;
+}
+
+.privacy-notice {
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  color: #633c00;
+  background: #fff4d6;
+  border: 1px solid #e6b84f;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.privacy-notice strong {
+  color: #4d2e00;
 }
 
 .provider-grid {

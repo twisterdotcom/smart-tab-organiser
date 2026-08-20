@@ -4,9 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Smart Tab Organiser — Settings</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
@@ -22,7 +20,7 @@
         <div class="info-content">
           <p><strong>Click the extension icon</strong> to deduplicate tabs and tidy your pinned tabs (unpin tabs not in your list, pin matching ones, reorder to match your list). If no tabs are pinned yet, the extension will pin tabs from your list (opening new tabs for any URL not already open). Duplicate detection uses your settings (e.g. keep highest anchor). The icon badge shows how many duplicate tabs are open.</p>
           <p><strong>Right-click menu:</strong> Use the extension menu to organize tabs, reload tabs, collapse or expand groups, or open extension options.</p>
-          <p><strong>AI Tab Organization:</strong> Use "Organize tabs with AI" from the context menu, keyboard shortcut (⌘+Shift+O / Ctrl+Shift+O), or "Organize Tabs" in the popup. Configure a provider below — cloud (your own API key) or fully on-device.</p>
+          <p><strong>AI Tab Organization:</strong> Use the context menu, keyboard shortcut (⌘+Shift+O / Ctrl+Shift+O), or the button on this page. Configure a cloud or on-device provider below.</p>
         </div>
       </section>
 
@@ -128,7 +126,7 @@
             <label class="setting-label" for="githubToken">GitHub personal access token</label>
             <p class="setting-description">
               Used to fetch open pull requests and read issue states. The PR feature requires <code>read:user</code>. Private repositories also require suitable repository access.
-              <br><strong>Create a token:</strong> <a href="https://github.com/settings/tokens?type=beta" target="_blank">github.com/settings/tokens</a>
+              <br><strong>Create a token:</strong> <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener noreferrer">github.com/settings/tokens</a>
             </p>
           </div>
           <div class="input-with-toggle">
@@ -141,7 +139,7 @@
           <div class="setting-info">
             <label class="setting-label">Enable PR tab group</label>
             <p class="setting-description">
-              When enabled, the extension maintains a <strong>PRs</strong> group for your open pull requests and review requests. Each dedupe or organize action refreshes this group first. Duplicate removal keeps the copy in <strong>PRs</strong>. Split-view tabs remain unchanged.
+              When enabled, the extension maintains a <strong>PRs</strong> group for your open pull requests and review requests. It opens missing tabs for matching PRs returned by GitHub. Each dedupe or organize action refreshes this group first. Tabs that no longer match an open PR leave the group but remain open. Duplicate removal keeps the copy in <strong>PRs</strong>. Split-view tabs remain unchanged.
             </p>
           </div>
           <label class="switch">
@@ -176,7 +174,11 @@
       
       <section class="settings-section settings-section--ai">
         <h2>AI Tab Organization</h2>
-        <p class="section-description">Pick a provider, configure it in its card below, and choose what happens if it fails. Cloud providers need an API key (stored locally, never shared). On-device providers need no key and send nothing over the network.</p>
+        <p class="section-description">Pick a provider, configure its card, and choose what happens if it fails. Cloud credentials stay in extension-local storage and go only to the service that issued them. On-device providers need no provider API key.</p>
+
+        <div class="privacy-notice" role="note">
+          <strong>Cloud AI data disclosure:</strong> When you start cloud AI organization, the extension sends tab titles, URLs without query parameters or fragments, custom instructions, and relevant group names to the selected provider. URL paths can still contain private information. Provider terms control API costs and provider-side retention.
+        </div>
 
         <div class="setting-item">
           <div class="setting-info">
@@ -192,11 +194,11 @@
           </select>
         </div>
 
-        <h3 class="subsection-title">Cloud providers <span class="subsection-note">API key required — tab titles and URLs are sent to the provider you use</span></h3>
+        <h3 class="subsection-title">Cloud providers <span class="subsection-note">API key required — the disclosure above applies</span></h3>
         <div class="provider-grid">
           <div class="provider-card" data-provider="openai">
             <div class="provider-card-header">OpenAI <span class="primary-badge">Primary</span></div>
-            <label class="field-label" for="openaiKey">API key <a href="https://platform.openai.com/api-keys" target="_blank">Get a key ↗</a></label>
+            <label class="field-label" for="openaiKey">API key <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">Get a key ↗</a></label>
             <div class="input-with-toggle">
               <input type="password" id="openaiKey" class="api-key-input" placeholder="sk-...">
               <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
@@ -208,7 +210,7 @@
 
           <div class="provider-card" data-provider="claude">
             <div class="provider-card-header">Claude <span class="primary-badge">Primary</span></div>
-            <label class="field-label" for="claudeKey">API key <a href="https://console.anthropic.com/settings/keys" target="_blank">Get a key ↗</a></label>
+            <label class="field-label" for="claudeKey">API key <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">Get a key ↗</a></label>
             <div class="input-with-toggle">
               <input type="password" id="claudeKey" class="api-key-input" placeholder="sk-ant-...">
               <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
@@ -220,7 +222,7 @@
 
           <div class="provider-card" data-provider="gemini">
             <div class="provider-card-header">Gemini <span class="primary-badge">Primary</span></div>
-            <label class="field-label" for="geminiKey">API key <a href="https://aistudio.google.com/app/apikey" target="_blank">Get a key ↗</a></label>
+            <label class="field-label" for="geminiKey">API key <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">Get a key ↗</a></label>
             <div class="input-with-toggle">
               <input type="password" id="geminiKey" class="api-key-input" placeholder="AIza...">
               <button type="button" class="toggle-password" aria-label="Show key" title="Show key"><span class="eye-icon" aria-hidden="true"></span></button>
@@ -231,7 +233,7 @@
           </div>
         </div>
 
-        <h3 class="subsection-title">On-device providers <span class="subsection-note">No API key — tab data never leaves this machine</span></h3>
+        <h3 class="subsection-title">On-device providers <span class="subsection-note">No provider API key — processing stays on this computer</span></h3>
         <div class="provider-grid provider-grid--two">
           <div class="provider-card" data-provider="chrome-ai">
             <div class="provider-card-header">Chrome built-in AI <span class="primary-badge">Primary</span></div>
@@ -249,7 +251,7 @@
 
           <div class="provider-card" data-provider="local">
             <div class="provider-card-header">Local model <span class="primary-badge">Primary</span></div>
-            <p class="provider-card-desc">Any local server with an OpenAI-compatible API: Ollama, LM Studio, llama.cpp, vLLM.</p>
+            <p class="provider-card-desc">An OpenAI-compatible server on this computer, using <code>localhost</code> or <code>127.0.0.1</code>: Ollama, LM Studio, llama.cpp, or vLLM.</p>
             <label class="field-label" for="localBaseUrl">Server address</label>
             <input type="text" id="localBaseUrl" class="api-key-input" placeholder="http://localhost:11434/v1" spellcheck="false">
             <label class="field-label" for="localModel">Model name</label>
@@ -286,7 +288,7 @@
             <label class="setting-label">Allow server-based (cloud) fallbacks</label>
             <p class="setting-description">
               Also allow cloud providers with a saved API key as a last resort when the on-device options fail.
-              <br><strong>When this happens, tab titles and URLs are sent to that cloud provider.</strong> Leave off to guarantee tab data never leaves this machine.
+              <br><strong>When this happens, the cloud AI data disclosure above applies.</strong> Leave this setting off to keep tab data on this computer.
             </p>
           </div>
           <label class="switch">
@@ -384,7 +386,7 @@
             <label class="setting-label">Organize tabs on extension icon click</label>
             <p class="setting-description">
               When enabled, clicking the extension icon will deduplicate tabs AND organize them using AI.
-              <br>When disabled, the extension icon will only deduplicate tabs (default behavior).
+              <br>When disabled, the extension icon deduplicates tabs and applies your pinned-tab list (default behavior).
             </p>
           </div>
           <label class="switch">
@@ -396,7 +398,12 @@
     </div>
     
     <footer>
-      <p>Settings are automatically saved.</p>
+      <p>Settings are automatically saved in extension-local storage.</p>
+      <p class="footer-links">
+        <a href="https://github.com/twisterdotcom/smart-tab-organiser/blob/main/PRIVACY_POLICY.md" target="_blank" rel="noopener noreferrer">Privacy policy</a>
+        <span aria-hidden="true">·</span>
+        <a href="https://github.com/twisterdotcom/smart-tab-organiser/issues" target="_blank" rel="noopener noreferrer">Support</a>
+      </p>
     </footer>
   </div>
   <script src="ai-models.js"></script>
