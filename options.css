@@ -507,6 +507,41 @@ footer {
   box-shadow: 0 0 0 3px var(--accent-focus);
 }
 
+.github-label-groups-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.github-label-groups-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-focus);
+}
+
+.github-label-groups-warning {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #e6b84f;
+  border-radius: var(--radius-sm);
+  background: #fff4d6;
+  color: #633c00;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.github-label-groups-warning[hidden] {
+  display: none;
+}
+
 .local-model-buttons {
   display: flex;
   flex-wrap: wrap;

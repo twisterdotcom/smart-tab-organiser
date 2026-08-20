@@ -101,9 +101,13 @@ The PR group feature:
 - Receives pull-request URLs from GitHub
 - Opens missing tabs for matching pull requests returned by GitHub and places them in the PRs group
 
-The Closed group feature sends repository names and issue numbers from GitHub issue tabs. GitHub returns the current issue state.
+The Closed and issue-label group features use the existing per-issue GitHub REST request. The extension sends a repository name and issue number from each GitHub issue tab.
 
-The extension does not store the GitHub username or API responses after it completes the operation. GitHub processes requests under the [GitHub General Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
+GitHub returns the current issue state and label names. The extension does not store the GitHub username or GitHub API responses after the operation.
+
+The issue-label feature uses the existing `api.github.com` host permission. It requires no new host permission.
+
+GitHub processes requests under the [GitHub General Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
 
 ## Data sharing
 
@@ -137,7 +141,7 @@ The extension package contains all executable code. It does not download or exec
 | `notifications` | Show progress, results, and errors for user-started operations. |
 | `contextMenus` | Add tab-management commands to the extension action menu. |
 | AI API hosts | Send user-started requests to the selected cloud AI provider. |
-| `api.github.com` | Run optional GitHub group features. |
+| `api.github.com` | Run optional GitHub PR, Closed, and issue-label group features. |
 | `localhost` and `127.0.0.1` | Contact an optional model server on the same computer. |
 
 ## Chrome Web Store Limited Use

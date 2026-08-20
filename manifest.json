@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Smart Tab Organiser",
-  "version": "1.2.2",
+  "version": "1.3.0",
   "description": "Dedupe tabs, tidy pinned URL lists, manage GitHub tab groups, and organize tabs with AI or your own API keys.",
   "homepage_url": "https://github.com/twisterdotcom/smart-tab-organiser",
   "permissions": [

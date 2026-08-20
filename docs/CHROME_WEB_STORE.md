@@ -94,7 +94,9 @@ The extension contacts OpenAI, Anthropic, or Google only for cloud AI organizati
 
 ### Host permission for `api.github.com`
 
-The extension retrieves open pull requests and issue states when the user enables a GitHub group feature.
+When the user enables a GitHub group feature, the extension retrieves open pull requests, issue states, and issue label names.
+
+The issue-label feature uses the existing per-issue GitHub REST request and the existing `api.github.com` host permission. It requires no new host permission.
 
 ### Host permissions for `localhost` and `127.0.0.1`
 
@@ -113,7 +115,7 @@ Select the dashboard categories that cover these data types:
 - Personally identifiable information: The GitHub feature temporarily reads the authenticated GitHub username.
 - Authentication information: The extension stores user-supplied API keys and a GitHub token locally.
 - Web history: The extension reads current-window tab URLs and titles.
-- Website content: A page title can contain text supplied by the website.
+- Website content: The extension reads page titles, GitHub issue states, and GitHub issue label names.
 
 Also disclose these user-provided values in the free-text fields:
 
@@ -121,6 +123,9 @@ Also disclose these user-provided values in the free-text fields:
 - Pinned URL rules
 - Provider and model settings
 - Existing tab-group names used for AI organization
+- GitHub issue label names in settings
+
+The extension uses GitHub issue states and label names only during the current operation. It does not store GitHub API responses afterward.
 
 The extension uses this data only for its tab-management purpose. It does not sell data or use data for advertising or credit decisions.
 

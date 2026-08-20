@@ -70,10 +70,69 @@ document.addEventListener('DOMContentLoaded', async () => {
   const pinnedUrlsTextarea = document.getElementById('pinnedUrls');
   const refreshPrGroupBtn = document.getElementById('refreshPrGroupBtn');
   const refreshClosedIssueGroupBtn = document.getElementById('refreshClosedIssueGroupBtn');
+  const refreshGithubLabelGroupsBtn = document.getElementById('refreshGithubLabelGroupsBtn');
   const githubTokenInput = document.getElementById('githubToken');
   const prGroupEnabledCheckbox = document.getElementById('prGroupEnabled');
   const closedIssueGroupEnabledCheckbox = document.getElementById('closedIssueGroupEnabled');
+  const githubLabelGroupsEnabledCheckbox = document.getElementById('githubLabelGroupsEnabled');
+  const githubLabelGroupNamesTextarea = document.getElementById('githubLabelGroupNames');
+  const githubLabelGroupNamesWarning = document.getElementById('githubLabelGroupNamesWarning');
   const bookmarksGroupColorSelect = document.getElementById('bookmarksGroupColor');
+
+  const RESERVED_GITHUB_LABEL_GROUP_NAMES = new Map([
+    ['prs', 'PRs'],
+    ['closed', 'Closed'],
+    ['bookmarks', 'BOOKMARKS'],
+    ['misc', 'Misc'],
+  ]);
+
+  function normalizeGitHubLabelGroupNames(value) {
+    const lines = Array.isArray(value)
+      ? value
+      : typeof value === 'string'
+        ? value.split(/\r?\n/)
+        : [];
+    const names = [];
+    const seen = new Set();
+
+    for (const line of lines) {
+      if (typeof line !== 'string') continue;
+      const name = line.trim();
+      if (!name) continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      names.push(name);
+    }
+
+    return names;
+  }
+
+  function updateGitHubLabelGroupNamesWarning(names) {
+    const reservedNames = names
+      .map(name => RESERVED_GITHUB_LABEL_GROUP_NAMES.get(name.toLowerCase()))
+      .filter(Boolean);
+
+    githubLabelGroupNamesWarning.hidden = reservedNames.length === 0;
+    githubLabelGroupNamesWarning.textContent = reservedNames.length
+      ? `The extension ignores these reserved names: ${reservedNames.join(', ')}.`
+      : '';
+  }
+
+  function saveGitHubLabelGroupNames(updateTextarea = false) {
+    const names = normalizeGitHubLabelGroupNames(githubLabelGroupNamesTextarea.value);
+    if (updateTextarea) {
+      githubLabelGroupNamesTextarea.value = names.join('\n');
+    }
+    updateGitHubLabelGroupNamesWarning(names);
+    return chrome.storage.local.set({ githubLabelGroupNames: names });
+  }
+
+  function hasNormalizedGitHubLabelGroupNames(value, names) {
+    return Array.isArray(value)
+      && value.length === names.length
+      && value.every((name, index) => name === names[index]);
+  }
 
   // Show/hide password for API key inputs
   document.querySelectorAll('.toggle-password').forEach((btn) => {
@@ -98,7 +157,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled', 'aiAllowCloudFallback',
     'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
     'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting', 'sortTabsWithinGroupsByTitle', 'organizeOnClick', 'pinnedUrls',
-    'githubToken', 'prGroupEnabled', 'closedIssueGroupEnabled', 'bookmarksGroupColor', 'localBaseUrl', 'localModel'
+    'githubToken', 'prGroupEnabled', 'closedIssueGroupEnabled', 'githubLabelGroupsEnabled', 'githubLabelGroupNames',
+    'bookmarksGroupColor', 'localBaseUrl', 'localModel'
   ]);
   ignoreQueryCheckbox.checked = settings.ignoreQuery !== false; // default to true
   ignoreHashCheckbox.checked = settings.ignoreHash !== false; // default to true
@@ -157,6 +217,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   prGroupEnabledCheckbox.checked = settings.prGroupEnabled === true;
   closedIssueGroupEnabledCheckbox.checked = settings.closedIssueGroupEnabled === true;
+  githubLabelGroupsEnabledCheckbox.checked = settings.githubLabelGroupsEnabled === true;
+  const loadedGitHubLabelGroupNames = normalizeGitHubLabelGroupNames(settings.githubLabelGroupNames);
+  githubLabelGroupNamesTextarea.value = loadedGitHubLabelGroupNames.join('\n');
+  updateGitHubLabelGroupNamesWarning(loadedGitHubLabelGroupNames);
+  if (
+    settings.githubLabelGroupNames !== undefined
+    && !hasNormalizedGitHubLabelGroupNames(settings.githubLabelGroupNames, loadedGitHubLabelGroupNames)
+  ) {
+    chrome.storage.local.set({ githubLabelGroupNames: loadedGitHubLabelGroupNames });
+  }
   bookmarksGroupColorSelect.value = settings.bookmarksGroupColor || 'yellow';
 
   // Save settings when changed
@@ -549,6 +619,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   closedIssueGroupEnabledCheckbox.addEventListener('change', () => {
     chrome.storage.local.set({ closedIssueGroupEnabled: closedIssueGroupEnabledCheckbox.checked });
   });
+  githubLabelGroupsEnabledCheckbox.addEventListener('change', () => {
+    chrome.storage.local.set({ githubLabelGroupsEnabled: githubLabelGroupsEnabledCheckbox.checked });
+  });
+  githubLabelGroupNamesTextarea.addEventListener('input', () => {
+    saveGitHubLabelGroupNames();
+  });
+  githubLabelGroupNamesTextarea.addEventListener('change', () => {
+    saveGitHubLabelGroupNames(true);
+  });
 
   // Refresh PR group button
   refreshPrGroupBtn.addEventListener('click', async () => {
@@ -590,6 +669,34 @@ document.addEventListener('DOMContentLoaded', async () => {
       actionStatus.className = 'status error';
     } finally {
       refreshClosedIssueGroupBtn.disabled = false;
+    }
+  });
+
+  refreshGithubLabelGroupsBtn.addEventListener('click', async () => {
+    refreshGithubLabelGroupsBtn.disabled = true;
+    actionStatus.textContent = 'Deduplicating tabs and refreshing label groups...';
+    actionStatus.className = 'status info';
+    try {
+      await saveGitHubLabelGroupNames(true);
+      const result = await chrome.runtime.sendMessage({ action: 'syncGitHubLabelTabGroups' });
+      if (result && result.success) {
+        const messages = [result.message, result.warning]
+          .filter(message => typeof message === 'string' && message.trim());
+        actionStatus.textContent = messages.join('\n') || 'The extension refreshed the label groups.';
+        actionStatus.className = result.warning ? 'status info' : 'status success';
+      } else {
+        const messages = result
+          ? [result.error, result.warning, result.message]
+            .filter(message => typeof message === 'string' && message.trim())
+          : [];
+        actionStatus.textContent = messages.join('\n') || 'The extension did not refresh the label groups.';
+        actionStatus.className = 'status error';
+      }
+    } catch (error) {
+      actionStatus.textContent = 'Error: ' + error.message;
+      actionStatus.className = 'status error';
+    } finally {
+      refreshGithubLabelGroupsBtn.disabled = false;
     }
   });
 
@@ -652,7 +759,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Organize tabs button
   organizeTabsBtn.addEventListener('click', async () => {
     organizeTabsBtn.disabled = true;
-    actionStatus.textContent = 'Organizing tabs with AI...';
+    actionStatus.textContent = 'Deduplicating and organizing tabs with AI...';
     actionStatus.className = 'status info';
 
     try {

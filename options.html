@@ -20,7 +20,7 @@
         <div class="info-content">
           <p><strong>Click the extension icon</strong> to deduplicate tabs and tidy your pinned tabs (unpin tabs not in your list, pin matching ones, reorder to match your list). If no tabs are pinned yet, the extension will pin tabs from your list (opening new tabs for any URL not already open). Duplicate detection uses your settings (e.g. keep highest anchor). The icon badge shows how many duplicate tabs are open.</p>
           <p><strong>Right-click menu:</strong> Use the extension menu to organize tabs, reload tabs, collapse or expand groups, or open extension options.</p>
-          <p><strong>AI Tab Organization:</strong> Use the context menu, keyboard shortcut (⌘+Shift+O / Ctrl+Shift+O), or the button on this page. Configure a cloud or on-device provider below.</p>
+          <p><strong>AI Tab Organization:</strong> Use the context menu, keyboard shortcut (⌘+Shift+O / Ctrl+Shift+O), or the button on this page. These actions deduplicate tabs first. Configure a cloud or on-device provider below.</p>
         </div>
       </section>
 
@@ -29,7 +29,7 @@
         <div class="actions">
           <button id="testBtn" class="btn btn-secondary">Test Duplicate Detection</button>
           <button id="reloadAllBtn" class="btn btn-secondary">Reload All Tabs</button>
-          <button id="organizeTabsBtn" class="btn btn-primary">Organize Tabs with AI</button>
+          <button id="organizeTabsBtn" class="btn btn-primary">Deduplicate and organize tabs with AI</button>
           <button id="tidyPinnedBtn" class="btn btn-secondary">Deduplicate and tidy pinned tabs</button>
           <button id="ungroupTabsBtn" class="btn btn-secondary">Ungroup All Tabs</button>
         </div>
@@ -125,7 +125,7 @@
           <div class="setting-info">
             <label class="setting-label" for="githubToken">GitHub personal access token</label>
             <p class="setting-description">
-              Used to fetch open pull requests and read issue states. The PR feature requires <code>read:user</code>. Private repositories also require suitable repository access.
+              The extension uses this token to fetch open pull requests, issue states, and label names. The PR feature requires <code>read:user</code>. Private repositories also require suitable repository access.
               <br><strong>Create a token:</strong> <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener noreferrer">github.com/settings/tokens</a>
             </p>
           </div>
@@ -169,6 +169,33 @@
         <div class="setting-item">
           <button id="refreshClosedIssueGroupBtn" class="btn btn-secondary">Refresh Closed group</button>
           <p class="setting-description" style="margin-top: 0.5em;">Check the GitHub issue tabs in the current window now.</p>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="githubLabelGroupsEnabled">Enable GitHub issue label groups</label>
+            <p class="setting-description">When enabled, the extension groups GitHub issue tabs by the label names below.</p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="githubLabelGroupsEnabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-item setting-item--stacked">
+          <div class="setting-info">
+            <label class="setting-label" for="githubLabelGroupNames">GitHub issue label names</label>
+            <p class="setting-description" id="githubLabelGroupNamesHelp">
+              Enter one exact GitHub label name on each line. The top-to-bottom order sets the priority. The extension uses exact matching and ignores letter case. The first match wins. The <strong>Closed</strong> group wins when its feature is enabled. The extension does not change pinned or split-view tabs.
+            </p>
+          </div>
+          <textarea id="githubLabelGroupNames" class="github-label-groups-textarea" rows="6" aria-describedby="githubLabelGroupNamesHelp githubLabelGroupNamesWarning" spellcheck="false" placeholder="bug&#10;help wanted"></textarea>
+          <p id="githubLabelGroupNamesWarning" class="github-label-groups-warning" role="status" hidden></p>
+        </div>
+
+        <div class="setting-item">
+          <button id="refreshGithubLabelGroupsBtn" class="btn btn-secondary">Dedupe and refresh label groups</button>
+          <p class="setting-description" style="margin-top: 0.5em;">Dedupe GitHub issue tabs and refresh the label groups now.</p>
         </div>
       </section>
       

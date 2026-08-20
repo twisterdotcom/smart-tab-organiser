@@ -6,6 +6,8 @@ console.log('Smart Tab Organiser extension background service worker loaded');
 const PR_GROUP_TITLE = 'PRs';
 const CLOSED_GROUP_TITLE = 'Closed';
 const ALWAYS_PRESERVED_GROUP_NAMES = ['BOOKMARKS', 'PRS'];
+const RESERVED_GITHUB_LABEL_GROUP_NAMES = new Set(['BOOKMARKS', 'PRS', 'CLOSED', 'MISC']);
+const GITHUB_LABEL_GROUP_COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'cyan', 'grey'];
 const GITHUB_API_VERSION = '2022-11-28';
 
 /** Extract a complete bracketed slice starting at `start` (handles strings/escapes). */
@@ -51,9 +53,82 @@ function tabQueryForWindow(windowId) {
     : { currentWindow: true };
 }
 
-function getAlwaysPreservedGroupNames(closedIssueGroupEnabled) {
+function normalizeGitHubLabelName(name) {
+  return typeof name === 'string' ? name.trim().toLowerCase() : '';
+}
+
+function normalizeGitHubLabelGroupNames(value) {
+  const rawNames = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(/\r?\n/)
+      : [];
+  const seen = new Set();
+  const names = [];
+
+  for (const rawName of rawNames) {
+    if (typeof rawName !== 'string') continue;
+    const name = rawName.trim();
+    const key = normalizeGitHubLabelName(name);
+    if (!key || seen.has(key) || RESERVED_GITHUB_LABEL_GROUP_NAMES.has(key.toUpperCase())) continue;
+    seen.add(key);
+    names.push(name);
+  }
+
+  return names;
+}
+
+function getManagedGitHubLabelGroupNames(settings, windowId) {
+  const byWindow = settings?.githubManagedLabelGroupNamesByWindow;
+  let scopedNames = [];
+  if (byWindow && typeof byWindow === 'object' && !Array.isArray(byWindow)) {
+    if (Number.isInteger(windowId)) {
+      scopedNames = normalizeGitHubLabelGroupNames(byWindow[String(windowId)]);
+    } else {
+      scopedNames = normalizeGitHubLabelGroupNames(Object.values(byWindow).flat());
+    }
+  }
+  return normalizeGitHubLabelGroupNames([
+    ...normalizeGitHubLabelGroupNames(settings?.githubManagedLabelGroupNames),
+    ...scopedNames,
+  ]);
+}
+
+let githubManagedLabelHistoryWrite = Promise.resolve();
+async function setManagedGitHubLabelGroupNames(windowId, names) {
+  const normalizedNames = normalizeGitHubLabelGroupNames(names);
+  const write = githubManagedLabelHistoryWrite
+    .catch(() => {})
+    .then(async () => {
+      const stored = await chrome.storage.local.get(['githubManagedLabelGroupNamesByWindow']);
+      const current = stored.githubManagedLabelGroupNamesByWindow;
+      const byWindow = current && typeof current === 'object' && !Array.isArray(current)
+        ? { ...current }
+        : {};
+      if (normalizedNames.length > 0) byWindow[String(windowId)] = normalizedNames;
+      else delete byWindow[String(windowId)];
+      await chrome.storage.local.set({
+        githubManagedLabelGroupNames: [],
+        githubManagedLabelGroupNamesByWindow: byWindow,
+      });
+    });
+  githubManagedLabelHistoryWrite = write;
+  return write;
+}
+
+function getAlwaysPreservedGroupNames(settingsOrClosedEnabled = false, windowId) {
+  const settings = typeof settingsOrClosedEnabled === 'object' && settingsOrClosedEnabled !== null
+    ? settingsOrClosedEnabled
+    : { closedIssueGroupEnabled: settingsOrClosedEnabled };
   const names = new Set(ALWAYS_PRESERVED_GROUP_NAMES);
-  if (closedIssueGroupEnabled === true) names.add(CLOSED_GROUP_TITLE.toUpperCase());
+  if (settings.closedIssueGroupEnabled === true) names.add(CLOSED_GROUP_TITLE.toUpperCase());
+  if (settings.githubLabelGroupsEnabled === true) {
+    const labelNames = normalizeGitHubLabelGroupNames([
+      ...normalizeGitHubLabelGroupNames(settings.githubLabelGroupNames),
+      ...getManagedGitHubLabelGroupNames(settings, windowId),
+    ]);
+    for (const name of labelNames) names.add(name.toUpperCase());
+  }
   return names;
 }
 
@@ -411,13 +486,22 @@ async function runOrganizeWithFeedback(windowId) {
       'ignoreQuery', 'ignoreHash', 'reloadTabs',
       'customInstructionsOptions', 'preserveGroups', 'preserveGroupsMinTabs', 'mergeIntoExisting'
     ]);
-    // Refresh enabled GitHub groups first, then dedupe, tidy pinned tabs, and organize with AI.
-    await syncEnabledGitHubTabGroups(targetWindowId).catch(() => {});
+    // Refresh PRs first so dedupe keeps the managed PR copy. Refresh issue groups after dedupe.
+    const githubPrSync = await syncEnabledGitHubTabGroups(targetWindowId, {
+      includePr: true,
+      includeIssues: false,
+    }).catch(() => ({ stopRemainingSyncs: false }));
     const ignoreQuery = settings.ignoreQuery !== false;
     const ignoreHash = settings.ignoreHash !== false;
     const reloadTabs = settings.reloadTabs === true;
-    await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, targetWindowId);
+    const dedupeResult = await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, targetWindowId);
+    if (!dedupeResult.success) throw new Error(dedupeResult.error || 'Duplicate removal failed');
     await dedupeAndTidyPinned(ignoreQuery, ignoreHash, targetWindowId);
+    const githubIssueSync = await syncEnabledGitHubTabGroups(targetWindowId, {
+      includePr: false,
+      includeIssues: true,
+      blockedByEarlierSync: githubPrSync.stopRemainingSyncs,
+    }).catch(() => ({ preservedTabIds: [] }));
 
     const preserveGroups = settings.preserveGroups !== false;
     const preserveGroupsMinTabs = parseMinTabs(settings.preserveGroupsMinTabs);
@@ -431,7 +515,14 @@ async function runOrganizeWithFeedback(windowId) {
       message: 'AI is organizing your tabs...'
     });
 
-    const result = await organizeTabs(preserveGroups, mergeIntoExisting, customInstructions, preserveGroupsMinTabs, targetWindowId);
+    const result = await organizeTabs(
+      preserveGroups,
+      mergeIntoExisting,
+      customInstructions,
+      preserveGroupsMinTabs,
+      targetWindowId,
+      githubIssueSync.preservedTabIds
+    );
     chrome.notifications.clear('organize-progress');
     if (!result.success) {
       const failures = result.failures || [];
@@ -486,12 +577,23 @@ async function runDedupeAndTidyPinned(windowId) {
     const settings = await chrome.storage.local.get([
       'ignoreQuery', 'ignoreHash', 'reloadTabs'
     ]);
-    await syncEnabledGitHubTabGroups(targetWindowId).catch(() => {});
+    const githubPrSync = await syncEnabledGitHubTabGroups(targetWindowId, {
+      includePr: true,
+      includeIssues: false,
+    }).catch(() => ({ stopRemainingSyncs: false }));
     const ignoreQuery = settings.ignoreQuery !== false;
     const ignoreHash = settings.ignoreHash !== false;
     const reloadTabs = settings.reloadTabs === true;
-    await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, targetWindowId);
+    const dedupeResult = await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, targetWindowId);
+    if (!dedupeResult.success) {
+      throw new Error(dedupeResult.error || 'Duplicate removal failed');
+    }
     const result = await dedupeAndTidyPinned(ignoreQuery, ignoreHash, targetWindowId);
+    await syncEnabledGitHubTabGroups(targetWindowId, {
+      includePr: false,
+      includeIssues: true,
+      blockedByEarlierSync: githubPrSync.stopRemainingSyncs,
+    }).catch(() => {});
     if (result.success) {
       chrome.notifications.create({
         type: 'basic',
@@ -659,17 +761,30 @@ function scheduleBadgeUpdate() {
   }, 300);
 }
 
-// Update badge when tabs are created, updated, or removed
+// Update badge when tabs are created, updated, or removed.
 chrome.tabs.onCreated.addListener(scheduleBadgeUpdate);
 
-chrome.tabs.onUpdated.addListener(scheduleBadgeUpdate);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  scheduleBadgeUpdate();
+  if (typeof changeInfo?.url === 'string') {
+    removeNavigatedTabFromManagedGitHubGroup(tabId, changeInfo.url, tab).catch(error => {
+      if (!isStaleTabError(error)) console.warn('Could not update a navigated GitHub issue tab:', error);
+    });
+  }
+});
 
 chrome.tabs.onRemoved.addListener(scheduleBadgeUpdate);
 
 chrome.tabs.onActivated.addListener(scheduleBadgeUpdate);
 
-// Also update badge when window focus changes (user switches windows)
+// Also update badge when window focus changes (user switches windows).
 chrome.windows.onFocusChanged.addListener(scheduleBadgeUpdate);
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  setManagedGitHubLabelGroupNames(windowId, []).catch(error => {
+    console.warn('Could not remove GitHub label-group history for a closed window:', error);
+  });
+});
 
 // Check if URL is valid and processable
 function isValidUrl(url) {
@@ -1593,7 +1708,7 @@ function parseGitHubIssueUrl(rawUrl) {
   }
 }
 
-async function fetchGitHubIssueState(githubToken, issue) {
+async function fetchGitHubIssueMetadata(githubToken, issue) {
   const owner = encodeURIComponent(issue.owner);
   const repo = encodeURIComponent(issue.repo);
   const endpoint = `https://api.github.com/repos/${owner}/${repo}/issues/${issue.issueNumber}`;
@@ -1615,14 +1730,20 @@ async function fetchGitHubIssueState(githubToken, issue) {
     }
 
     if (data.pull_request) {
-      return { issue, isPullRequest: true };
+      return { issue, isPullRequest: true, labels: [] };
     }
     if (data.state !== 'open' && data.state !== 'closed') {
       return { issue, error: 'GitHub returned an unknown issue state' };
     }
-    return { issue, state: data.state };
+
+    const labels = Array.isArray(data.labels)
+      ? data.labels
+        .map(label => typeof label === 'string' ? label : label?.name)
+        .filter(label => typeof label === 'string' && label.trim())
+      : [];
+    return { issue, state: data.state, labels };
   } catch (error) {
-    return { issue, error: error.message || 'Failed to fetch GitHub issue state' };
+    return { issue, error: error.message || 'Failed to fetch GitHub issue details' };
   }
 }
 
@@ -1641,136 +1762,436 @@ async function getGitHubIssueTabs(windowId) {
   return issueTabs;
 }
 
-// Move closed issue tabs from any group, or from no group, into the Closed group.
-async function syncClosedIssueTabGroup(windowId) {
-  const settings = await chrome.storage.local.get(['githubToken']);
-  const githubToken = settings.githubToken?.trim();
-  if (!githubToken) {
-    return { success: false, error: 'GitHub token not set' };
+async function removeNavigatedTabFromManagedGitHubGroup(tabId, destinationUrl, eventTab) {
+  if (parseGitHubIssueUrl(destinationUrl)) return false;
+
+  const initialTab = eventTab?.id === tabId ? eventTab : await chrome.tabs.get(tabId);
+  if (initialTab.pinned || isInSplitView(initialTab) || !Number.isInteger(initialTab.groupId) || initialTab.groupId < 0) {
+    return false;
   }
 
-  const targetWindowId = await resolveTargetWindowId(windowId);
-  const win = await chrome.windows.get(targetWindowId);
-  const issueTabs = await getGitHubIssueTabs(win.id);
-  if (issueTabs.length === 0) {
-    return { success: true, checkedCount: 0, movedCount: 0, message: 'No GitHub issue tabs found in this window.' };
+  const settings = await chrome.storage.local.get([
+    'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
+    'githubLabelGroupNames', 'githubManagedLabelGroupNames',
+    'githubManagedLabelGroupNamesByWindow'
+  ]);
+  const managedNames = new Set();
+  if (settings.closedIssueGroupEnabled === true) {
+    managedNames.add(normalizeGitHubLabelName(CLOSED_GROUP_TITLE));
   }
+  if (settings.githubLabelGroupsEnabled === true) {
+    for (const name of normalizeGitHubLabelGroupNames([
+      ...normalizeGitHubLabelGroupNames(settings.githubLabelGroupNames),
+      ...getManagedGitHubLabelGroupNames(settings, initialTab.windowId),
+    ])) {
+      managedNames.add(normalizeGitHubLabelName(name));
+    }
+  }
+  if (managedNames.size === 0) return false;
 
+  const groups = await chrome.tabGroups.query({ windowId: initialTab.windowId });
+  const currentGroup = groups.find(group => group.id === initialTab.groupId);
+  if (!currentGroup || !managedNames.has(normalizeGitHubLabelName(currentGroup.title || ''))) return false;
+
+  // Re-read the tab after storage and group queries so a later navigation or manual move wins.
+  const currentTab = await chrome.tabs.get(tabId);
+  const currentUrl = isValidUrl(currentTab.pendingUrl) ? currentTab.pendingUrl : await ensureTabUrl(currentTab);
+  if (parseGitHubIssueUrl(currentUrl)) return false;
+  if (currentTab.groupId !== initialTab.groupId || currentTab.pinned || isInSplitView(currentTab)) return false;
+
+  await chrome.tabs.ungroup([tabId]);
+  return true;
+}
+
+async function fetchGitHubIssueMetadataForTabs(githubToken, issueTabs) {
   const issuesByKey = new Map(issueTabs.map(({ issue }) => [issue.key, issue]));
   const uniqueIssues = Array.from(issuesByKey.values());
-  const stateResults = [];
+  const results = [];
 
   // Small batches avoid a burst of requests when a window contains many issue tabs.
   for (let i = 0; i < uniqueIssues.length; i += 5) {
     const batch = uniqueIssues.slice(i, i + 5);
     const batchResults = await Promise.all(
-      batch.map(issue => fetchGitHubIssueState(githubToken, issue))
+      batch.map(issue => fetchGitHubIssueMetadata(githubToken, issue))
     );
-    stateResults.push(...batchResults);
+    results.push(...batchResults);
     if (batchResults.some(result => result.globalError)) break;
   }
 
-  const successfulResults = stateResults.filter(result => !result.error);
-  const failedResults = stateResults.filter(result => result.error);
-  const failedCount = uniqueIssues.length - successfulResults.length;
-  if (successfulResults.length === 0 && failedCount > 0) {
+  const successfulResults = results.filter(result => !result.error);
+  const failedResults = results.filter(result => result.error);
+  return {
+    uniqueIssues,
+    successfulResults,
+    failedResults,
+    failedCount: uniqueIssues.length - successfulResults.length,
+    metadataByKey: new Map(successfulResults.map(result => [result.issue.key, result])),
+  };
+}
+
+function selectGitHubIssueGroup(metadata, configuredLabelNames, closedIssueGroupEnabled) {
+  if (!metadata || metadata.error || metadata.isPullRequest) return null;
+  if (closedIssueGroupEnabled === true && metadata.state === 'closed') {
+    return CLOSED_GROUP_TITLE;
+  }
+
+  const issueLabelKeys = new Set(
+    (Array.isArray(metadata.labels) ? metadata.labels : [])
+      .map(label => typeof label === 'string' ? label : label?.name)
+      .map(normalizeGitHubLabelName)
+      .filter(Boolean)
+  );
+  return configuredLabelNames.find(name => issueLabelKeys.has(normalizeGitHubLabelName(name))) || null;
+}
+
+function githubLabelGroupColor(groupName, configuredLabelNames) {
+  const key = normalizeGitHubLabelName(groupName);
+  const index = configuredLabelNames.findIndex(name => normalizeGitHubLabelName(name) === key);
+  return GITHUB_LABEL_GROUP_COLORS[(index >= 0 ? index : 0) % GITHUB_LABEL_GROUP_COLORS.length];
+}
+
+async function filterUnchangedGitHubIssueTabs(candidates) {
+  const safeIds = await Promise.all(candidates.map(async ({ tab, issue }) => {
+    try {
+      const currentTab = await chrome.tabs.get(tab.id);
+      const currentUrl = isValidUrl(currentTab.pendingUrl)
+        ? currentTab.pendingUrl
+        : await ensureTabUrl(currentTab);
+      const currentIssue = parseGitHubIssueUrl(currentUrl);
+      if (!currentIssue || currentIssue.key !== issue.key) return null;
+      if (currentTab.windowId !== tab.windowId || currentTab.groupId !== tab.groupId) return null;
+      if (currentTab.pinned || isInSplitView(currentTab)) return null;
+      return currentTab.id;
+    } catch (_) {
+      return null;
+    }
+  }));
+  return safeIds.filter(Number.isInteger);
+}
+
+async function validateGroupedGitHubIssueTabs(candidates, groupId) {
+  const candidateById = new Map(candidates.map(candidate => [candidate.tab.id, candidate]));
+  const validIds = [];
+  const invalidIds = [];
+
+  for (const [tabId, candidate] of candidateById) {
+    try {
+      const currentTab = await chrome.tabs.get(tabId);
+      if (currentTab.groupId !== groupId) continue;
+      const currentUrl = isValidUrl(currentTab.pendingUrl)
+        ? currentTab.pendingUrl
+        : await ensureTabUrl(currentTab);
+      const currentIssue = parseGitHubIssueUrl(currentUrl);
+      if (
+        currentIssue &&
+        currentIssue.key === candidate.issue.key &&
+        !currentTab.pinned &&
+        !isInSplitView(currentTab)
+      ) {
+        validIds.push(tabId);
+      } else {
+        invalidIds.push(tabId);
+      }
+    } catch (_) {
+      // A closed tab needs no cleanup.
+    }
+  }
+
+  if (invalidIds.length > 0) await chrome.tabs.ungroup(invalidIds);
+  return validIds;
+}
+
+const githubIssueSyncPromises = new Map();
+
+async function syncGitHubIssueTabGroups(windowId, overrides = {}) {
+  const targetWindowId = await resolveTargetWindowId(windowId);
+  const previousSync = githubIssueSyncPromises.get(targetWindowId) || Promise.resolve();
+  const currentSync = previousSync
+    .catch(() => {})
+    .then(() => syncGitHubIssueTabGroupsUnlocked(targetWindowId, overrides));
+  githubIssueSyncPromises.set(targetWindowId, currentSync);
+
+  try {
+    return await currentSync;
+  } finally {
+    if (githubIssueSyncPromises.get(targetWindowId) === currentSync) {
+      githubIssueSyncPromises.delete(targetWindowId);
+    }
+  }
+}
+
+async function syncGitHubIssueTabGroupsUnlocked(windowId, overrides = {}) {
+  const settings = await chrome.storage.local.get([
+    'githubToken', 'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
+    'githubLabelGroupNames', 'githubManagedLabelGroupNames',
+    'githubManagedLabelGroupNamesByWindow'
+  ]);
+  const closedIssueGroupEnabled = overrides.closedIssueGroupEnabled ?? (settings.closedIssueGroupEnabled === true);
+  const githubLabelGroupsEnabled = overrides.githubLabelGroupsEnabled ?? (settings.githubLabelGroupsEnabled === true);
+  const configuredLabelNames = normalizeGitHubLabelGroupNames(settings.githubLabelGroupNames);
+  const managedLabelNames = normalizeGitHubLabelGroupNames([
+    ...getManagedGitHubLabelGroupNames(settings, windowId),
+    ...configuredLabelNames,
+  ]);
+
+  if (!closedIssueGroupEnabled && !githubLabelGroupsEnabled) {
+    return { success: true, checkedCount: 0, movedCount: 0, message: 'No GitHub issue group feature is enabled.' };
+  }
+  if (!closedIssueGroupEnabled && configuredLabelNames.length === 0 && managedLabelNames.length === 0) {
+    return { success: true, checkedCount: 0, movedCount: 0, message: 'No GitHub label groups are configured.' };
+  }
+
+  const win = await chrome.windows.get(windowId);
+  const issueTabs = await getGitHubIssueTabs(win.id);
+  if (issueTabs.length === 0) {
+    if (githubLabelGroupsEnabled && getManagedGitHubLabelGroupNames(settings, windowId).length > 0) {
+      await setManagedGitHubLabelGroupNames(windowId, []);
+    }
+    return { success: true, checkedCount: 0, movedCount: 0, preservedTabIds: [], message: 'No GitHub issue tabs found in this window.' };
+  }
+
+  const githubToken = settings.githubToken?.trim();
+  if (!githubToken) {
     return {
       success: false,
-      error: failedResults[0]?.error || 'Could not check GitHub issue states',
-      failedCount
+      error: 'GitHub token not set',
+      preservedTabIds: issueTabs.map(({ tab }) => tab.id),
     };
   }
 
-  const closedIssueKeys = new Set(
-    successfulResults
-      .filter(result => !result.isPullRequest && result.state === 'closed')
-      .map(result => result.issue.key)
-  );
-  const checkedCount = successfulResults.filter(result => !result.isPullRequest).length;
+  const metadata = await fetchGitHubIssueMetadataForTabs(githubToken, issueTabs);
+  if (metadata.successfulResults.length === 0 && metadata.failedCount > 0) {
+    return {
+      success: false,
+      error: metadata.failedResults[0]?.error || 'Could not read GitHub issue details',
+      failedCount: metadata.failedCount,
+      preservedTabIds: issueTabs.map(({ tab }) => tab.id),
+    };
+  }
 
-  // Re-read the tabs after the API requests so a tab that navigated elsewhere is not moved.
+  // Re-read tabs after the API requests so navigated or closed tabs are not moved.
   const currentIssueTabs = await getGitHubIssueTabs(win.id);
-  const closedTabs = currentIssueTabs
-    .filter(({ issue }) => closedIssueKeys.has(issue.key))
-    .map(({ tab }) => tab);
-
   const groups = await chrome.tabGroups.query({ windowId: win.id });
-  const closedGroup = groups.find(
-    group => (group.title || '').trim().toUpperCase() === CLOSED_GROUP_TITLE.toUpperCase()
-  );
+  const groupsById = new Map(groups.map(group => [group.id, group]));
+  const groupsByName = new Map();
+  for (const group of groups) {
+    const key = normalizeGitHubLabelName(group.title || '');
+    if (key && !groupsByName.has(key)) groupsByName.set(key, group);
+  }
 
+  const managedLabelKeys = new Set(managedLabelNames.map(normalizeGitHubLabelName));
+  const tabsByTarget = new Map();
+  const staleCandidates = [];
+  const activeManagedLabelNames = new Set();
+  const preservedTabIds = new Set();
+  const currentIssueTabIds = new Set(currentIssueTabs.map(({ tab }) => tab.id));
+  for (const { tab } of issueTabs) {
+    if (!currentIssueTabIds.has(tab.id)) preservedTabIds.add(tab.id);
+  }
+  let checkedCount = 0;
+  let closedCount = 0;
+  let labelMatchedCount = 0;
   let alreadyGroupedCount = 0;
   let skippedPinnedCount = 0;
   let skippedSplitViewCount = 0;
-  const tabIdsToMove = [];
 
-  for (const tab of closedTabs) {
-    if (closedGroup && tab.groupId === closedGroup.id) {
-      alreadyGroupedCount++;
-    } else if (tab.pinned) {
+  for (const candidate of currentIssueTabs) {
+    const { tab, issue } = candidate;
+    const currentGroup = groupsById.get(tab.groupId);
+    const currentGroupKey = normalizeGitHubLabelName(currentGroup?.title || '');
+    const isManagedLabelGroup = githubLabelGroupsEnabled && managedLabelKeys.has(currentGroupKey);
+    const issueMetadata = metadata.metadataByKey.get(issue.key);
+    if (!issueMetadata) {
+      preservedTabIds.add(tab.id);
+      if (isManagedLabelGroup && currentGroup?.title) activeManagedLabelNames.add(currentGroup.title);
+      continue;
+    }
+    if (!issueMetadata.isPullRequest) checkedCount++;
+
+    const targetTitle = selectGitHubIssueGroup(
+      issueMetadata,
+      githubLabelGroupsEnabled ? configuredLabelNames : [],
+      closedIssueGroupEnabled
+    );
+    if (targetTitle === CLOSED_GROUP_TITLE) closedCount++;
+    else if (targetTitle) labelMatchedCount++;
+
+    if (tab.pinned) {
       skippedPinnedCount++;
-    } else if (isInSplitView(tab)) {
+      if (isManagedLabelGroup && currentGroup?.title) activeManagedLabelNames.add(currentGroup.title);
+      continue;
+    }
+    if (isInSplitView(tab)) {
       skippedSplitViewCount++;
-    } else {
-      tabIdsToMove.push(tab.id);
+      if (isManagedLabelGroup && currentGroup?.title) activeManagedLabelNames.add(currentGroup.title);
+      continue;
     }
+
+    if (targetTitle) {
+      const targetKey = normalizeGitHubLabelName(targetTitle);
+      if (currentGroupKey === targetKey) {
+        alreadyGroupedCount++;
+        if (targetTitle !== CLOSED_GROUP_TITLE) activeManagedLabelNames.add(targetTitle);
+        continue;
+      }
+      if (!tabsByTarget.has(targetKey)) {
+        tabsByTarget.set(targetKey, { title: targetTitle, candidates: [] });
+      }
+      tabsByTarget.get(targetKey).candidates.push(candidate);
+      continue;
+    }
+
+    const isManagedClosedGroup = closedIssueGroupEnabled && currentGroupKey === normalizeGitHubLabelName(CLOSED_GROUP_TITLE);
+    if (isManagedLabelGroup || isManagedClosedGroup) staleCandidates.push(candidate);
   }
 
-  const liveTabIds = await filterExistingTabIds(tabIdsToMove);
-  if (liveTabIds.length > 0) {
-    if (closedGroup) {
-      await chrome.tabs.group({ groupId: closedGroup.id, tabIds: liveTabIds });
+  let movedCount = 0;
+  for (const [targetKey, target] of tabsByTarget) {
+    const safeTabIds = await filterUnchangedGitHubIssueTabs(target.candidates);
+    if (safeTabIds.length === 0) continue;
+    const safeTabIdSet = new Set(safeTabIds);
+    const safeCandidates = target.candidates.filter(candidate => safeTabIdSet.has(candidate.tab.id));
+
+    const existingGroup = groupsByName.get(targetKey);
+    let targetGroupId;
+    if (existingGroup) {
+      targetGroupId = existingGroup.id;
+      await chrome.tabs.group({ groupId: targetGroupId, tabIds: safeTabIds });
     } else {
-      const closedGroupId = await chrome.tabs.group({
-        tabIds: liveTabIds,
-        createProperties: { windowId: win.id }
+      targetGroupId = await chrome.tabs.group({
+        tabIds: safeTabIds,
+        createProperties: { windowId: win.id },
       });
-      await chrome.tabGroups.update(closedGroupId, { title: CLOSED_GROUP_TITLE, color: 'grey' });
+      const color = target.title === CLOSED_GROUP_TITLE
+        ? 'grey'
+        : githubLabelGroupColor(target.title, configuredLabelNames);
+      await chrome.tabGroups.update(targetGroupId, { title: target.title, color });
+      const newGroup = { id: targetGroupId, title: target.title, color };
+      groupsById.set(targetGroupId, newGroup);
+      groupsByName.set(targetKey, newGroup);
+    }
+
+    const validGroupedTabIds = await validateGroupedGitHubIssueTabs(safeCandidates, targetGroupId);
+    if (validGroupedTabIds.length > 0 && target.title !== CLOSED_GROUP_TITLE) {
+      activeManagedLabelNames.add(target.title);
+    }
+    movedCount += validGroupedTabIds.length;
+  }
+
+  const liveStaleTabIds = await filterUnchangedGitHubIssueTabs(staleCandidates);
+  if (liveStaleTabIds.length > 0) {
+    await chrome.tabs.ungroup(liveStaleTabIds);
+  }
+
+  if (githubLabelGroupsEnabled) {
+    const previousManagedLabelNames = getManagedGitHubLabelGroupNames(settings, windowId);
+    const nextManagedLabelNames = normalizeGitHubLabelGroupNames(Array.from(activeManagedLabelNames));
+    if (JSON.stringify(nextManagedLabelNames) !== JSON.stringify(previousManagedLabelNames)) {
+      await setManagedGitHubLabelGroupNames(windowId, nextManagedLabelNames);
     }
   }
 
-  let message;
-  if (closedTabs.length === 0) {
-    message = `No closed GitHub issue tabs found after checking ${checkedCount} issue(s).`;
-  } else {
-    message = `Found ${closedTabs.length} closed GitHub issue tab(s).`;
-    if (liveTabIds.length > 0) message += ` Moved ${liveTabIds.length} to ${CLOSED_GROUP_TITLE}.`;
-    if (alreadyGroupedCount > 0) message += ` ${alreadyGroupedCount} already in ${CLOSED_GROUP_TITLE}.`;
-    const skippedCount = skippedPinnedCount + skippedSplitViewCount;
-    if (skippedCount > 0) message += ` Skipped ${skippedCount} pinned or split-view tab(s).`;
-  }
-  if (failedCount > 0) {
-    message += ` Could not check ${failedCount} issue(s).`;
-  }
+  let message = `Checked ${checkedCount} GitHub issue(s).`;
+  if (movedCount > 0) message += ` Moved ${movedCount} tab(s) into managed groups.`;
+  if (alreadyGroupedCount > 0) message += ` ${alreadyGroupedCount} tab(s) were already grouped.`;
+  if (liveStaleTabIds.length > 0) message += ` Removed ${liveStaleTabIds.length} stale group assignment(s).`;
+  if (closedCount === 0 && labelMatchedCount === 0) message += ' No matching issue groups were found.';
+  const skippedCount = skippedPinnedCount + skippedSplitViewCount;
+  if (skippedCount > 0) message += ` Skipped ${skippedCount} pinned or split-view tab(s).`;
+  if (metadata.failedCount > 0) message += ` Could not read ${metadata.failedCount} issue(s).`;
 
   return {
     success: true,
     checkedCount,
-    closedCount: closedTabs.length,
-    movedCount: liveTabIds.length,
+    closedCount,
+    labelMatchedCount,
+    movedCount,
+    ungroupedCount: liveStaleTabIds.length,
     alreadyGroupedCount,
     skippedPinnedCount,
     skippedSplitViewCount,
-    failedCount,
-    warning: failedCount > 0 ? `Could not check ${failedCount} GitHub issue(s).` : null,
-    message
+    failedCount: metadata.failedCount,
+    preservedTabIds: Array.from(preservedTabIds),
+    warning: metadata.failedCount > 0 ? `Could not read ${metadata.failedCount} GitHub issue(s).` : null,
+    message,
   };
 }
 
-async function syncEnabledGitHubTabGroups(windowId) {
+async function syncClosedIssueTabGroup(windowId) {
+  return syncGitHubIssueTabGroups(windowId, {
+    closedIssueGroupEnabled: true,
+    githubLabelGroupsEnabled: false,
+  });
+}
+
+async function syncGitHubLabelTabGroups(windowId) {
+  return syncGitHubIssueTabGroups(windowId, { githubLabelGroupsEnabled: true });
+}
+
+async function dedupeAndSyncGitHubLabelTabGroups(windowId) {
+  const targetWindowId = await resolveTargetWindowId(windowId);
+  const settings = await chrome.storage.local.get(['ignoreQuery', 'ignoreHash', 'reloadTabs']);
+  const dedupeResult = await closeDuplicates(
+    settings.ignoreQuery !== false,
+    settings.ignoreHash !== false,
+    settings.reloadTabs === true,
+    targetWindowId
+  );
+  if (!dedupeResult.success) return dedupeResult;
+
+  const syncResult = await syncGitHubLabelTabGroups(targetWindowId);
+  if (!syncResult.success) return syncResult;
+  return {
+    ...syncResult,
+    duplicateClosedCount: dedupeResult.closedCount,
+    message: `${dedupeResult.message}. ${syncResult.message}`,
+  };
+}
+
+async function syncEnabledGitHubTabGroups(windowId, stages = {}) {
+  const includePr = stages.includePr !== false;
+  const includeIssues = stages.includeIssues !== false;
   const settings = await chrome.storage.local.get([
-    'githubToken', 'prGroupEnabled', 'closedIssueGroupEnabled'
+    'githubToken', 'prGroupEnabled', 'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
+    'githubLabelGroupNames', 'githubManagedLabelGroupNames',
+    'githubManagedLabelGroupNamesByWindow'
   ]);
-  const enabled = settings.prGroupEnabled === true || settings.closedIssueGroupEnabled === true;
-  if (!enabled) return { warnings: [] };
+  const targetWindowId = await resolveTargetWindowId(windowId);
+  const hasManagedLabels = normalizeGitHubLabelGroupNames([
+    ...normalizeGitHubLabelGroupNames(settings.githubLabelGroupNames),
+    ...getManagedGitHubLabelGroupNames(settings, targetWindowId),
+  ]).length > 0;
+  const prEnabled = includePr && settings.prGroupEnabled === true;
+  const issuesEnabled = includeIssues && (
+    settings.closedIssueGroupEnabled === true ||
+    (settings.githubLabelGroupsEnabled === true && hasManagedLabels)
+  );
+  if (!prEnabled && !issuesEnabled) {
+    return { warnings: [], stopRemainingSyncs: false, preservedTabIds: [] };
+  }
 
   const warnings = [];
+  const preservedTabIds = new Set();
+  let stopRemainingSyncs = false;
+  const preserveCurrentIssueTabs = async () => {
+    const issueTabs = await getGitHubIssueTabs(targetWindowId);
+    for (const { tab } of issueTabs) preservedTabIds.add(tab.id);
+  };
+
+  if (issuesEnabled && stages.blockedByEarlierSync === true) {
+    await preserveCurrentIssueTabs();
+    return { warnings: [], stopRemainingSyncs: true, preservedTabIds: Array.from(preservedTabIds) };
+  }
+
   if (!settings.githubToken?.trim()) {
     warnings.push('Add a GitHub token in the extension settings.');
+    stopRemainingSyncs = true;
+    if (issuesEnabled) await preserveCurrentIssueTabs();
   } else {
     const runSync = async (label, sync) => {
       try {
         const result = await sync();
+        for (const tabId of result?.preservedTabIds || []) preservedTabIds.add(tabId);
         if (result?.success === false) {
           const error = result.error || 'refresh failed';
           warnings.push(`${label}: ${error}`);
@@ -1785,12 +2206,11 @@ async function syncEnabledGitHubTabGroups(windowId) {
       }
     };
 
-    let stopRemainingSyncs = false;
-    if (settings.prGroupEnabled === true) {
+    if (prEnabled) {
       stopRemainingSyncs = await runSync(PR_GROUP_TITLE, () => syncPrTabGroup(windowId));
     }
-    if (settings.closedIssueGroupEnabled === true && !stopRemainingSyncs) {
-      await runSync(CLOSED_GROUP_TITLE, () => syncClosedIssueTabGroup(windowId));
+    if (issuesEnabled && !stopRemainingSyncs) {
+      stopRemainingSyncs = await runSync('GitHub issues', () => syncGitHubIssueTabGroups(windowId));
     }
   }
 
@@ -1803,10 +2223,14 @@ async function syncEnabledGitHubTabGroups(windowId) {
       title: 'GitHub tab groups not fully refreshed',
       message: uniqueWarnings.join('\n')
     });
-    return { warnings: uniqueWarnings };
+    return {
+      warnings: uniqueWarnings,
+      stopRemainingSyncs,
+      preservedTabIds: Array.from(preservedTabIds),
+    };
   }
 
-  return { warnings: [] };
+  return { warnings: [], stopRemainingSyncs, preservedTabIds: Array.from(preservedTabIds) };
 }
 
 function formatExistingGroupsForPrompt(existingGroups) {
@@ -2551,7 +2975,14 @@ async function buildProviderChain(settings) {
   return (await describeProviderChain(settings)).chain;
 }
 
-async function organizeTabs(preserveGroups, mergeIntoExisting, customInstructions, preserveGroupsMinTabs = 1, windowId) {
+async function organizeTabs(
+  preserveGroups,
+  mergeIntoExisting,
+  customInstructions,
+  preserveGroupsMinTabs = 1,
+  windowId,
+  additionalPreservedTabIds = []
+) {
   try {
     const minTabs = parseMinTabs(preserveGroupsMinTabs);
 
@@ -2559,14 +2990,21 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     const settings = await chrome.storage.local.get([
       'openaiKey', 'claudeKey', 'geminiKey', 'aiProvider', 'aiFallbackEnabled', 'aiAllowCloudFallback',
       'aiFallbackOrder', 'openaiModel', 'claudeModel', 'geminiModel', 'customInstructionsOptions',
-      'localBaseUrl', 'localModel', 'closedIssueGroupEnabled'
+      'localBaseUrl', 'localModel', 'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
+      'githubLabelGroupNames', 'githubManagedLabelGroupNames',
+      'githubManagedLabelGroupNamesByWindow'
     ]);
 
     // Use custom instructions from the action, or fall back to the saved settings.
     let instructions = customInstructions || settings.customInstructionsOptions || '';
-    if (settings.closedIssueGroupEnabled === true) {
-      const closedGroupInstruction = `The ${CLOSED_GROUP_TITLE} group is managed by the extension. Do not assign other tabs to it.`;
-      instructions = [instructions, closedGroupInstruction].filter(Boolean).join('\n');
+    const managedIssueGroupNames = [];
+    if (settings.closedIssueGroupEnabled === true) managedIssueGroupNames.push(CLOSED_GROUP_TITLE);
+    if (settings.githubLabelGroupsEnabled === true) {
+      managedIssueGroupNames.push(...normalizeGitHubLabelGroupNames(settings.githubLabelGroupNames));
+    }
+    if (managedIssueGroupNames.length > 0) {
+      const managedGroupInstruction = `These groups are managed by the extension: ${managedIssueGroupNames.map(name => JSON.stringify(name)).join(', ')}. Do not assign other tabs to them.`;
+      instructions = [instructions, managedGroupInstruction].filter(Boolean).join('\n');
     }
 
     // Validate that at least one provider in the chain is configured
@@ -2595,16 +3033,32 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     }
 
     const tabs = validTabs;
+    const additionalPreservedTabIdSet = new Set(
+      (Array.isArray(additionalPreservedTabIds) ? additionalPreservedTabIds : [])
+        .filter(Number.isInteger)
+    );
 
     // Never change extension-managed groups, regardless of the preservation setting.
+    // Preserve a full group when it contains a tab whose GitHub details could not be read.
     // Pinned tabs (Chrome-native) are excluded separately via tab.pinned.
     const allGroups = await chrome.tabGroups.query({ windowId: tabs[0].windowId });
-    const alwaysPreservedGroupNames = getAlwaysPreservedGroupNames(settings.closedIssueGroupEnabled);
-    const alwaysPreservedGroupIds = new Set(
-      allGroups
-        .filter(g => alwaysPreservedGroupNames.has((g.title || '').trim().toUpperCase()))
-        .map(g => g.id)
+    const alwaysPreservedGroupNames = getAlwaysPreservedGroupNames(settings, tabs[0].windowId);
+    const additionalPreservedGroupIds = new Set(
+      tabs
+        .filter(tab => additionalPreservedTabIdSet.has(tab.id) && Number.isInteger(tab.groupId) && tab.groupId >= 0)
+        .map(tab => tab.groupId)
     );
+    for (const group of allGroups) {
+      if (additionalPreservedGroupIds.has(group.id) && group.title?.trim()) {
+        alwaysPreservedGroupNames.add(group.title.trim().toUpperCase());
+      }
+    }
+    const alwaysPreservedGroupIds = new Set([
+      ...allGroups
+        .filter(g => alwaysPreservedGroupNames.has((g.title || '').trim().toUpperCase()))
+        .map(g => g.id),
+      ...additionalPreservedGroupIds,
+    ]);
 
     // Preserved groups = always-preserved + (when preserveGroups) groups with more than minTabs tabs
     const preservedGroupIds = new Set(alwaysPreservedGroupIds);
@@ -2656,6 +3110,7 @@ async function organizeTabs(preserveGroups, mergeIntoExisting, customInstruction
     const tabsForAI = validTabsAfterUngroup.filter((tab) => {
       if (tab.pinned) return false;
       if (isInSplitView(tab)) return false;
+      if (additionalPreservedTabIdSet.has(tab.id)) return false;
       if (alwaysPreservedGroupIds.has(tab.groupId)) return false;
       if (preserveGroups || mergeIntoExisting) {
         if (tab.groupId && tab.groupId !== -1 && preservedGroupIds.has(tab.groupId)) {
@@ -3001,8 +3456,12 @@ async function ungroupTabs() {
 
     // Get all groups in the current window; never ungroup enabled extension-managed groups.
     const groups = await chrome.tabGroups.query({ windowId: tabs[0].windowId });
-    const { closedIssueGroupEnabled } = await chrome.storage.local.get(['closedIssueGroupEnabled']);
-    const alwaysPreservedGroupNames = getAlwaysPreservedGroupNames(closedIssueGroupEnabled);
+    const managedGroupSettings = await chrome.storage.local.get([
+      'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
+      'githubLabelGroupNames', 'githubManagedLabelGroupNames',
+      'githubManagedLabelGroupNamesByWindow'
+    ]);
+    const alwaysPreservedGroupNames = getAlwaysPreservedGroupNames(managedGroupSettings, tabs[0].windowId);
     const alwaysPreservedIds = new Set(
       groups
         .filter(g => alwaysPreservedGroupNames.has((g.title || '').trim().toUpperCase()))
@@ -3037,8 +3496,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'closeDuplicates') {
     (async () => {
       const targetWindowId = await resolveTargetWindowId(request.windowId);
-      await syncEnabledGitHubTabGroups(targetWindowId).catch(() => {});
-      return closeDuplicates(request.ignoreQuery, request.ignoreHash, request.reloadTabs, targetWindowId);
+      const githubPrSync = await syncEnabledGitHubTabGroups(targetWindowId, {
+        includePr: true,
+        includeIssues: false,
+      }).catch(() => ({ stopRemainingSyncs: false }));
+      const result = await closeDuplicates(request.ignoreQuery, request.ignoreHash, request.reloadTabs, targetWindowId);
+      if (result.success) {
+        await syncEnabledGitHubTabGroups(targetWindowId, {
+          includePr: false,
+          includeIssues: true,
+          blockedByEarlierSync: githubPrSync.stopRemainingSyncs,
+        }).catch(() => {});
+      }
+      return result;
     })()
       .then(result => sendResponse(result))
       .catch(error => sendResponse({ success: false, error: error.message }));
@@ -3067,18 +3537,35 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'organizeTabs') {
     (async () => {
       const targetWindowId = await resolveTargetWindowId(request.windowId);
-      await syncEnabledGitHubTabGroups(targetWindowId).catch(() => {});
+      const githubPrSync = await syncEnabledGitHubTabGroups(targetWindowId, {
+        includePr: true,
+        includeIssues: false,
+      }).catch(() => ({ stopRemainingSyncs: false }));
+      const dedupeSettings = await chrome.storage.local.get([
+        'ignoreQuery', 'ignoreHash', 'reloadTabs', 'preserveGroupsMinTabs'
+      ]);
+      const dedupeResult = await closeDuplicates(
+        dedupeSettings.ignoreQuery !== false,
+        dedupeSettings.ignoreHash !== false,
+        dedupeSettings.reloadTabs === true,
+        targetWindowId
+      );
+      if (!dedupeResult.success) return dedupeResult;
+      const githubIssueSync = await syncEnabledGitHubTabGroups(targetWindowId, {
+        includePr: false,
+        includeIssues: true,
+        blockedByEarlierSync: githubPrSync.stopRemainingSyncs,
+      }).catch(() => ({ preservedTabIds: [] }));
+
       // A caller can omit preserveGroupsMinTabs. Use the saved value instead of 1.
-      let minTabsRaw = request.preserveGroupsMinTabs;
-      if (minTabsRaw === undefined) {
-        minTabsRaw = (await chrome.storage.local.get(['preserveGroupsMinTabs'])).preserveGroupsMinTabs;
-      }
+      const minTabsRaw = request.preserveGroupsMinTabs ?? dedupeSettings.preserveGroupsMinTabs;
       return organizeTabs(
         request.preserveGroups,
         request.mergeIntoExisting || false,
         request.customInstructions,
         parseMinTabs(minTabsRaw),
-        targetWindowId
+        targetWindowId,
+        githubIssueSync.preservedTabIds
       );
     })()
       .then(result => sendResponse(result))
@@ -3096,13 +3583,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'dedupeAndTidyPinned') {
     (async () => {
       const targetWindowId = await resolveTargetWindowId(request.windowId);
-      await syncEnabledGitHubTabGroups(targetWindowId).catch(() => {});
+      const githubPrSync = await syncEnabledGitHubTabGroups(targetWindowId, {
+        includePr: true,
+        includeIssues: false,
+      }).catch(() => ({ stopRemainingSyncs: false }));
       const settings = await chrome.storage.local.get(['ignoreQuery', 'ignoreHash', 'reloadTabs']);
       const ignoreQuery = settings.ignoreQuery !== false;
       const ignoreHash = settings.ignoreHash !== false;
       const reloadTabs = settings.reloadTabs === true;
-      await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, targetWindowId);
-      return dedupeAndTidyPinned(ignoreQuery, ignoreHash, targetWindowId);
+      const dedupeResult = await closeDuplicates(ignoreQuery, ignoreHash, reloadTabs, targetWindowId);
+      if (!dedupeResult.success) return dedupeResult;
+      const result = await dedupeAndTidyPinned(ignoreQuery, ignoreHash, targetWindowId);
+      await syncEnabledGitHubTabGroups(targetWindowId, {
+        includePr: false,
+        includeIssues: true,
+        blockedByEarlierSync: githubPrSync.stopRemainingSyncs,
+      }).catch(() => {});
+      return result;
     })()
       .then(result => sendResponse(result))
       .catch(error => sendResponse({ success: false, error: error.message }));
@@ -3118,6 +3615,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'syncClosedIssueTabGroup') {
     syncClosedIssueTabGroup(request.windowId)
+      .then(result => sendResponse(result))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (request.action === 'syncGitHubLabelTabGroups') {
+    dedupeAndSyncGitHubLabelTabGroups(request.windowId)
       .then(result => sendResponse(result))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;

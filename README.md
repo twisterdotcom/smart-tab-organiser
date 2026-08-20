@@ -12,13 +12,19 @@ A Chrome extension that **deduplicates tabs**, **tidies pinned tab lists**, main
 - **AI on your computer**: Chrome built-in AI and loopback model servers keep tab data on your computer.
 - **Optional cloud features**: Cloud AI and GitHub tab groups send data only after you configure a key and use the applicable feature.
 - [Privacy Policy](PRIVACY_POLICY.md)
+- [Release notes](RELEASE_NOTES.md)
 
 ## Key features
 
 - **AI tab organization**: Group tabs with OpenAI, Anthropic, Google, Chrome built-in AI, or a loopback model server. Cloud providers use your API key.
 - **Duplicate detection**: Same base URL with different anchors/hashes; optional ignore-query / ignore-hash rules; case-insensitive matching.
 - **Pinned URL list**: Pin, unpin, and order tabs to match a list you define (runs with the toolbar action or combined flows).
-- **GitHub tab groups** (optional): Maintains a **PRs** group and opens missing tabs for matching pull requests returned by GitHub. Stale PR tabs leave the group but remain open. The extension can also move closed issue tabs into **Closed**.
+- **GitHub tab groups** (optional): The extension maintains a **PRs** group and opens missing tabs for matching pull requests that GitHub returns.
+  - Stale PR tabs leave the group but remain open.
+  - The issue-label feature uses an optional ordered list of exact GitHub issue label names from settings.
+  - Label matching is exact and case-insensitive. The first configured matching label wins.
+  - If the **Closed** feature is enabled, a closed issue goes to **Closed** before label matching.
+  - The extension does not create empty label groups. Pinned and split-view tabs remain unchanged.
 - **Toolbar, context menu, and shortcut**: Left-click the icon, use the right-click menu, or press **⌘+Shift+O** (Mac) or **Ctrl+Shift+O** (Windows/Linux).
 
 ## AI on your computer (no provider API key)
@@ -56,13 +62,30 @@ Notes:
 
 ## Example: GitHub issue tabs
 
-For tabs like:
+For tabs such as:
 
 - `https://github.com/Expensify/Expensify/issues/573091`
 - `https://github.com/Expensify/Expensify/issues/573091#issuecomment-3595795518`
 - `https://github.com/Expensify/Expensify/issues/573091#issuecomment-3595796076`
 
-The extension can treat these as one logical page, keep the tab with the **highest** anchor number, and close the others (depending on your settings).
+With the applicable dedupe settings, the extension treats these tabs as one logical page. It keeps the tab with the **highest** anchor number and closes the others.
+
+For example, settings can contain this optional ordered list of exact GitHub issue label names:
+
+1. `Overdue`
+2. `Daily`
+3. `Bug`
+4. `New Feature`
+
+Label matching is exact and case-insensitive. The first configured matching label wins.
+
+After normal dedupe, issues with `Overdue` go to **Overdue** first. Other issues go to **Daily**, **Bug**, or **New Feature**, as applicable.
+
+An issue with `Bug` and `New Feature` goes to **Bug** because `Bug` appears first in settings.
+
+If the **Closed** feature is enabled, a closed issue goes to **Closed** instead of a label group.
+
+The extension does not create empty groups. Pinned and split-view tabs remain unchanged.
 
 ## Project structure
 
@@ -75,6 +98,7 @@ The extension can treat these as one logical page, keep the tab with the **highe
 ├── store-assets/          # Listing artwork and screenshots
 ├── docs/                  # Chrome Web Store submission guide
 ├── PRIVACY_POLICY.md
+├── RELEASE_NOTES.md
 └── README.md
 ```
 
