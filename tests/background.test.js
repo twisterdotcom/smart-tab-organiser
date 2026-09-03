@@ -12,7 +12,15 @@ const BACKGROUND_SOURCE = fs.readFileSync(
 );
 
 function eventStub() {
-  return { addListener() {} };
+  const listeners = [];
+  return {
+    addListener(listener) {
+      listeners.push(listener);
+    },
+    async emit(...args) {
+      for (const listener of listeners) await listener(...args);
+    },
+  };
 }
 
 function makeSseResponse(chunks) {
@@ -65,6 +73,7 @@ function loadBackground() {
       },
     },
     tabGroups: {
+      move: async () => {},
       query: async () => [],
       update: async () => {},
     },
@@ -391,11 +400,17 @@ test('PR refresh ungroups only stale non-split PR tabs', async () => {
   chrome.storage.local.get = async () => ({
     githubToken: 'github-token',
     prGroupEnabled: true,
+    prGroupColor: 'purple',
     ignoreQuery: true,
     ignoreHash: true,
   });
   chrome.windows.get = async (id) => ({ id });
-  chrome.tabGroups.query = async () => [{ id: 27, title: 'PRs' }];
+  const prGroup = { id: 27, title: 'PRs', color: 'blue' };
+  chrome.tabGroups.query = async () => [{ ...prGroup }];
+  chrome.tabGroups.update = async (id, updates) => {
+    assert.equal(id, prGroup.id);
+    Object.assign(prGroup, updates);
+  };
   chrome.tabs.query = async (query) => {
     if (query.windowId === 12 || query.groupId === 27) {
       return [currentPr, stalePr, splitPr, unrelatedTab];
@@ -434,28 +449,168 @@ test('PR refresh ungroups only stale non-split PR tabs', async () => {
 
   assert.equal(result.success, true);
   assert.deepEqual(ungrouped, [202]);
+  assert.equal(prGroup.color, 'purple');
 });
 
-test('GitHub label colors map to valid Chrome tab-group colors', () => {
+test('configured GitHub label colors are validated and use distinct defaults', () => {
   const { context } = loadBackground();
-  const expectedColors = new Map([
-    ['d73a4a', 'red'],
-    ['0e8a16', 'green'],
-    ['0075ca', 'blue'],
-    ['ededed', 'grey'],
-    ['00ffff', 'cyan'],
-    ['fbca04', 'yellow'],
-    ['5319e7', 'purple'],
+  const colors = context.resolveGitHubLabelGroupColors({
+    bookmarksGroupColor: 'yellow',
+    prGroupColor: 'blue',
+    githubLabelGroupNames: ['Overdue', 'Bug', 'New Feature', 'Docs', 'Help', 'Design'],
+    githubLabelGroupColors: {
+      BUG: 'orange',
+      overdue: 'teal',
+    },
+  });
+
+  assert.equal(colors.get('overdue'), 'red');
+  assert.equal(colors.get('bug'), 'orange');
+  assert.equal(colors.get('new feature'), 'green');
+  assert.equal(colors.get('docs'), 'purple');
+  assert.equal(colors.get('help'), 'cyan');
+  assert.equal(colors.get('design'), 'pink');
+  assert.equal(new Set(colors.values()).size, 6);
+  assert.equal(Array.from(colors.values()).includes('yellow'), false);
+  assert.equal(Array.from(colors.values()).includes('blue'), false);
+  assert.equal(Array.from(colors.values()).includes('grey'), false);
+
+  const specialNameColors = context.resolveGitHubLabelGroupColors({
+    githubLabelGroupNames: ['__proto__'],
+    githubLabelGroupColors: Object.fromEntries([['__proto__', 'orange']]),
+  });
+  assert.equal(specialNameColors.get('__proto__'), 'orange');
+
+  const scopedDescriptors = context.getManagedTabGroupDescriptors({
+    githubLabelGroupsEnabled: true,
+    closedIssueGroupEnabled: true,
+    githubLabelGroupNames: ['Bug'],
+  }, { includeLabelGroups: false });
+  assert.deepEqual(Array.from(scopedDescriptors, descriptor => descriptor.title), [
+    'BOOKMARKS', 'PRs', 'Closed'
   ]);
+});
 
-  for (const [hex, expected] of expectedColors) {
-    assert.equal(context.hexToChromeTabColor(hex), expected);
-    assert.equal(context.hexToChromeTabColor(`#${hex}`), expected);
-  }
+test('toolbar click passes the label-group sync preference to either click mode', async () => {
+  const { chrome, context } = loadBackground();
+  const calls = [];
+  let settings = { organizeOnClick: false, githubLabelGroupsOnClick: false };
+  chrome.storage.local.get = async () => ({ ...settings });
+  context.runDedupeAndTidyPinned = async (windowId, options) => calls.push({ mode: 'tidy', windowId, options });
+  context.runOrganizeWithFeedback = async (windowId, options) => calls.push({ mode: 'organize', windowId, options });
 
-  for (const invalid of [null, '', '#fff', 'not-a-color', 'd73a4ag']) {
-    assert.equal(context.hexToChromeTabColor(invalid), null);
-  }
+  await chrome.action.onClicked.emit({ windowId: 7 });
+  assert.equal(calls[0].mode, 'tidy');
+  assert.equal(calls[0].windowId, 7);
+  assert.equal(calls[0].options.includeLabelGroups, false);
+
+  settings = { organizeOnClick: true };
+  await chrome.action.onClicked.emit({ windowId: 8 });
+  assert.equal(calls[1].mode, 'organize');
+  assert.equal(calls[1].windowId, 8);
+  assert.equal(calls[1].options.includeLabelGroups, true);
+});
+
+test('the toolbar label gate leaves Closed and manual label sync available', async () => {
+  const { chrome, context } = loadBackground();
+  const settings = {
+    githubToken: 'github-token',
+    prGroupEnabled: false,
+    closedIssueGroupEnabled: true,
+    githubLabelGroupsEnabled: true,
+    githubLabelGroupNames: ['Bug'],
+    githubManagedLabelGroupNamesByWindow: {},
+  };
+  const calls = [];
+  chrome.storage.local.get = async () => ({ ...settings });
+  context.syncGitHubIssueTabGroups = async (windowId, overrides) => {
+    calls.push({ windowId, overrides });
+    return { success: true, preservedTabIds: [] };
+  };
+
+  await context.syncEnabledGitHubTabGroups(1, {
+    includePr: false,
+    includeIssues: true,
+    includeLabelGroups: false,
+  });
+  assert.equal(calls[0].overrides.closedIssueGroupEnabled, true);
+  assert.equal(calls[0].overrides.githubLabelGroupsEnabled, false);
+
+  await context.syncGitHubLabelTabGroups(1);
+  assert.equal(calls[1].overrides.githubLabelGroupsEnabled, true);
+
+  const prCalls = [];
+  settings.prGroupEnabled = true;
+  context.syncPrTabGroup = async (windowId, presentationOptions) => {
+    prCalls.push({ windowId, presentationOptions });
+    return { success: true };
+  };
+  await context.syncEnabledGitHubTabGroups(1, {
+    includePr: true,
+    includeIssues: false,
+    includeLabelGroups: false,
+  });
+  assert.equal(prCalls[0].presentationOptions.includeLabelGroups, false);
+});
+
+test('managed groups are colored and ordered before unrelated groups', async () => {
+  const { chrome, context } = loadBackground();
+  const groups = new Map([
+    [10, { id: 10, title: 'Bug', color: 'blue' }],
+    [11, { id: 11, title: 'Other', color: 'pink' }],
+    [12, { id: 12, title: 'prs', color: 'grey' }],
+    [13, { id: 13, title: 'bookmarks', color: 'red' }],
+    [14, { id: 14, title: 'Overdue', color: 'yellow' }],
+    [15, { id: 15, title: 'Closed', color: 'green' }],
+  ]);
+  let groupOrder = [10, 11, 12, 13, 14, 15];
+  let moveCount = 0;
+  const currentTabs = () => [
+    { id: 1, windowId: 1, index: 0, groupId: -1, pinned: true },
+    ...groupOrder.map((groupId, index) => ({
+      id: groupId + 100,
+      windowId: 1,
+      index: index + 1,
+      groupId,
+      pinned: false,
+    })),
+  ];
+
+  chrome.storage.local.get = async () => ({
+    bookmarksGroupColor: 'yellow',
+    prGroupColor: 'purple',
+    githubLabelGroupsEnabled: true,
+    closedIssueGroupEnabled: true,
+    githubLabelGroupNames: ['Overdue', 'Missing', 'Bug'],
+    githubLabelGroupColors: { overdue: 'red', bug: 'cyan' },
+  });
+  chrome.tabs.query = async () => currentTabs().map(tab => ({ ...tab }));
+  chrome.tabGroups.query = async () => Array.from(groups.values(), group => ({ ...group }));
+  chrome.tabGroups.update = async (id, updates) => Object.assign(groups.get(id), updates);
+  chrome.tabGroups.move = async (id, { index }) => {
+    moveCount++;
+    groupOrder = groupOrder.filter(groupId => groupId !== id);
+    groupOrder.splice(Math.max(0, index - 1), 0, id);
+    return { ...groups.get(id) };
+  };
+
+  await context.reconcileManagedTabGroups(1);
+  assert.deepEqual(groupOrder.map(id => groups.get(id).title), [
+    'BOOKMARKS', 'PRs', 'Overdue', 'Bug', 'Closed', 'Other'
+  ]);
+  assert.equal(groups.get(13).color, 'yellow');
+  assert.equal(groups.get(12).color, 'purple');
+  assert.equal(groups.get(14).color, 'red');
+  assert.equal(groups.get(10).color, 'cyan');
+  assert.equal(groups.get(15).color, 'grey');
+
+  const firstMoveCount = moveCount;
+  assert.equal(firstMoveCount > 0, true);
+  await context.reconcileManagedTabGroups(1);
+  assert.deepEqual(groupOrder.map(id => groups.get(id).title), [
+    'BOOKMARKS', 'PRs', 'Overdue', 'Bug', 'Closed', 'Other'
+  ]);
+  assert.equal(moveCount, firstMoveCount);
 });
 
 test('GitHub label settings normalize names and apply Closed before label priority', () => {
@@ -471,7 +626,7 @@ test('GitHub label settings normalize names and apply Closed before label priori
   const openIssue = { state: 'open', labels: ['Bug', { name: 'Overdue', color: 'd73a4a' }] };
   const openGroup = context.selectGitHubIssueGroup(openIssue, ['Overdue', 'Bug'], false);
   assert.equal(openGroup.title, 'Overdue');
-  assert.equal(openGroup.color, 'd73a4a');
+  assert.equal(Object.hasOwn(openGroup, 'color'), false);
 
   const closedGroup = context.selectGitHubIssueGroup(
     { ...openIssue, state: 'closed' },
@@ -479,7 +634,7 @@ test('GitHub label settings normalize names and apply Closed before label priori
     true
   );
   assert.equal(closedGroup.title, 'Closed');
-  assert.equal(closedGroup.color, null);
+  assert.equal(Object.hasOwn(closedGroup, 'color'), false);
   assert.equal(
     context.selectGitHubIssueGroup({ ...openIssue, isPullRequest: true }, ['Overdue', 'Bug'], true),
     null
@@ -492,6 +647,12 @@ test('dedupe runs before GitHub issue labels and assigns the first matching grou
     githubToken: 'github-token',
     githubLabelGroupsEnabled: true,
     githubLabelGroupNames: ['Overdue', 'Daily', 'Bug', 'New Feature'],
+    githubLabelGroupColors: {
+      overdue: 'purple',
+      daily: 'pink',
+      bug: 'orange',
+      'new feature': 'cyan',
+    },
     githubManagedLabelGroupNamesByWindow: {},
     closedIssueGroupEnabled: false,
     prGroupEnabled: false,
@@ -502,7 +663,7 @@ test('dedupe runs before GitHub issue labels and assigns the first matching grou
   const tabs = [
     { id: 1, windowId: 1, index: 0, title: 'Issue 1 comment 11', url: 'https://github.com/Expensify/Expensify/issues/1#issuecomment-11', groupId: -1, pinned: false, splitViewId: -1, lastAccessed: 11 },
     { id: 2, windowId: 1, index: 1, title: 'Issue 1 comment 12', url: 'https://github.com/Expensify/Expensify/issues/1#issuecomment-12', groupId: -1, pinned: false, splitViewId: -1, lastAccessed: 12 },
-    { id: 3, windowId: 1, index: 2, title: 'Issue 2', url: 'https://github.com/Expensify/Expensify/issues/2#issuecomment-42', groupId: -1, pinned: false, splitViewId: -1, lastAccessed: 13 },
+    { id: 3, windowId: 1, index: 2, title: 'Issue 2', url: 'https://github.com/example/other-repo/issues/2#issuecomment-42', groupId: -1, pinned: false, splitViewId: -1, lastAccessed: 13 },
     { id: 4, windowId: 1, index: 3, title: 'Issue 3', url: 'https://github.com/Expensify/Expensify/issues/3#issuecomment-99', groupId: -1, pinned: false, splitViewId: -1, lastAccessed: 14 },
     { id: 5, windowId: 1, index: 4, title: 'Issue 4', url: 'https://github.com/Expensify/Expensify/issues/4#issuecomment-101', groupId: -1, pinned: false, splitViewId: -1, lastAccessed: 15 },
   ];
@@ -561,7 +722,7 @@ test('dedupe runs before GitHub issue labels and assigns the first matching grou
 
   const issueData = {
     1: { state: 'open', labels: [{ name: 'Daily', color: 'fbca04' }, { name: 'Bug', color: '0e8a16' }, { name: 'Overdue', color: 'd73a4a' }] },
-    2: { state: 'open', labels: [{ name: 'Weekly', color: '5319e7' }, { name: 'New Feature', color: '0075ca' }, { name: 'Overdue', color: 'd73a4a' }] },
+    2: { state: 'open', labels: [{ name: 'Weekly', color: '5319e7' }, { name: 'New Feature', color: '0075ca' }, { name: 'Overdue', color: '0075ca' }] },
     3: { state: 'open', labels: [{ name: 'Weekly', color: '5319e7' }, { name: 'New Feature', color: '0075ca' }] },
     4: { state: 'open', labels: [{ name: 'Monthly', color: 'fbca04' }, { name: 'Bug', color: '0e8a16' }] },
   };
@@ -597,9 +758,9 @@ test('dedupe runs before GitHub issue labels and assigns the first matching grou
     'New Feature': [4],
     Bug: [5],
   });
-  assert.equal(groups.find(group => group.title === 'Overdue').color, 'red');
-  assert.equal(groups.find(group => group.title === 'New Feature').color, 'blue');
-  assert.equal(groups.find(group => group.title === 'Bug').color, 'green');
+  assert.equal(groups.find(group => group.title === 'Overdue').color, 'purple');
+  assert.equal(groups.find(group => group.title === 'New Feature').color, 'cyan');
+  assert.equal(groups.find(group => group.title === 'Bug').color, 'orange');
   assert.equal(groups.some(group => group.title === 'Daily'), false);
 
   const overdueGroup = groups.find(group => group.title === 'Overdue');
@@ -607,7 +768,7 @@ test('dedupe runs before GitHub issue labels and assigns the first matching grou
   const recolorResult = await context.syncGitHubIssueTabGroups(1);
   assert.equal(recolorResult.success, true);
   assert.equal(recolorResult.movedCount, 0);
-  assert.equal(overdueGroup.color, 'red');
+  assert.equal(overdueGroup.color, 'purple');
 
   const groupTitleForTab = (tabId) => {
     const tab = tabs.find(candidate => candidate.id === tabId);

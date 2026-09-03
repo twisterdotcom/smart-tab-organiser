@@ -9,55 +9,18 @@ const ALWAYS_PRESERVED_GROUP_NAMES = ['BOOKMARKS', 'PRS'];
 const RESERVED_GITHUB_LABEL_GROUP_NAMES = new Set(['BOOKMARKS', 'PRS', 'CLOSED', 'MISC']);
 const GITHUB_API_VERSION = '2022-11-28';
 
-// Representative Chromium tab-group tones converted to CIELAB (D65).
-const CHROME_TAB_GROUP_LAB = new Map([
-  ['grey',   [70.1, -1.4,   0.7]],
-  ['blue',   [69.8,  4.4, -43.4]],
-  ['red',    [70.3, 41.7,  22.1]],
-  ['yellow', [70.1, 23.2,  63.1]],
-  ['green',  [69.8, -50.3, 31.4]],
-  ['pink',   [70.3, 55.4, -18.1]],
-  ['purple', [70.4, 34.4, -42.0]],
-  ['cyan',   [70.4, -21.9, -32.4]],
-  ['orange', [70.1, 36.1,  51.0]],
+const CHROME_TAB_GROUP_COLORS = Object.freeze([
+  'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange', 'grey'
+]);
+const CHROME_TAB_GROUP_COLOR_SET = new Set(CHROME_TAB_GROUP_COLORS);
+const DEFAULT_GITHUB_LABEL_GROUP_COLORS = Object.freeze([
+  'red', 'green', 'purple', 'cyan', 'orange', 'pink', 'yellow', 'blue', 'grey'
 ]);
 
-/** Convert a six-digit hex color to the nearest Chrome tab group color name. */
-function hexToChromeTabColor(hex) {
-  if (typeof hex !== 'string') return null;
-  const match = hex.trim().match(/^#?([0-9a-f]{6})$/i);
-  if (!match) return null;
-
-  const normalizedHex = match[1];
-  const r = Number.parseInt(normalizedHex.slice(0, 2), 16);
-  const g = Number.parseInt(normalizedHex.slice(2, 4), 16);
-  const b = Number.parseInt(normalizedHex.slice(4, 6), 16);
-
-  // sRGB → linear
-  const rl = r <= 10 ? r / 3294.6 : Math.pow((r / 255 + 0.055) / 1.055, 2.4);
-  const gl = g <= 10 ? g / 3294.6 : Math.pow((g / 255 + 0.055) / 1.055, 2.4);
-  const bl = b <= 10 ? b / 3294.6 : Math.pow((b / 255 + 0.055) / 1.055, 2.4);
-
-  // Linear sRGB → XYZ (D65)
-  const x = (rl * 0.4124564 + gl * 0.3575761 + bl * 0.1804375) * 100;
-  const y = (rl * 0.2126729 + gl * 0.7151522 + bl * 0.0721750) * 100;
-  const z = (rl * 0.0193339 + gl * 0.1191920 + bl * 0.9503041) * 100;
-
-  // XYZ → LAB (D65 reference white)
-  const xn = 95.047, yn = 100.0, zn = 108.883;
-  const f = t => t > 0.008856 ? Math.cbrt(t) : (7.787 * t) + 16 / 116;
-  const fx = f(x / xn), fy = f(y / yn), fz = f(z / zn);
-  const L = (116 * fy) - 16, a = 500 * (fx - fy), bVal = 200 * (fy - fz);
-
-  // Find nearest Chrome tab color by Euclidean distance in LAB space
-  let bestName = null;
-  let bestDist = Infinity;
-  for (const [name, lab] of CHROME_TAB_GROUP_LAB) {
-    const dl = L - lab[0], da = a - lab[1], db = bVal - lab[2];
-    const dist = Math.sqrt(dl * dl + da * da + db * db);
-    if (dist < bestDist) { bestDist = dist; bestName = name; }
-  }
-  return bestName;
+function normalizeTabGroupColor(value, fallback = null) {
+  return typeof value === 'string' && CHROME_TAB_GROUP_COLOR_SET.has(value)
+    ? value
+    : fallback;
 }
 
 if (typeof chrome.storage.local.setAccessLevel === 'function') {
@@ -128,6 +91,186 @@ function normalizeGitHubLabelGroupNames(value) {
   }
 
   return names;
+}
+
+function normalizeGitHubLabelGroupColors(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return Object.create(null);
+
+  const colors = Object.create(null);
+  for (const [name, valueColor] of Object.entries(value)) {
+    const key = normalizeGitHubLabelName(name);
+    const color = normalizeTabGroupColor(valueColor);
+    if (!key || !color || RESERVED_GITHUB_LABEL_GROUP_NAMES.has(key.toUpperCase())) continue;
+    colors[key] = color;
+  }
+  return colors;
+}
+
+function resolveGitHubLabelGroupColors(settings = {}) {
+  const labelNames = normalizeGitHubLabelGroupNames(settings.githubLabelGroupNames);
+  const configuredColors = normalizeGitHubLabelGroupColors(settings.githubLabelGroupColors);
+  const resolvedColors = new Map();
+  const reservedColors = new Set([
+    normalizeTabGroupColor(settings.bookmarksGroupColor, 'yellow'),
+    normalizeTabGroupColor(settings.prGroupColor, 'blue'),
+    'grey',
+  ]);
+  const defaultColors = DEFAULT_GITHUB_LABEL_GROUP_COLORS.filter(color => !reservedColors.has(color));
+  const usedColors = new Set(reservedColors);
+
+  for (const name of labelNames) {
+    const key = normalizeGitHubLabelName(name);
+    const configuredColor = configuredColors[key];
+    if (!configuredColor) continue;
+    resolvedColors.set(key, configuredColor);
+    usedColors.add(configuredColor);
+  }
+
+  for (const [index, name] of labelNames.entries()) {
+    const key = normalizeGitHubLabelName(name);
+    if (resolvedColors.has(key)) continue;
+
+    const unusedColor = defaultColors.find(color => !usedColors.has(color));
+    const color = unusedColor || defaultColors[index % defaultColors.length];
+    resolvedColors.set(key, color);
+    usedColors.add(color);
+  }
+
+  return resolvedColors;
+}
+
+function getManagedTabGroupDescriptors(settings = {}, options = {}) {
+  const includeLabelGroups = options.includeLabelGroups
+    ?? (settings.githubLabelGroupsEnabled === true);
+  const includeClosedGroup = options.includeClosedGroup
+    ?? (settings.closedIssueGroupEnabled === true);
+  const labelNames = includeLabelGroups
+    ? normalizeGitHubLabelGroupNames(settings.githubLabelGroupNames)
+    : [];
+  const labelColors = resolveGitHubLabelGroupColors(settings);
+  const descriptors = [
+    {
+      title: 'BOOKMARKS',
+      color: normalizeTabGroupColor(settings.bookmarksGroupColor, 'yellow'),
+    },
+    {
+      title: PR_GROUP_TITLE,
+      color: normalizeTabGroupColor(settings.prGroupColor, 'blue'),
+    },
+    ...labelNames.map(title => ({
+      title,
+      color: labelColors.get(normalizeGitHubLabelName(title)),
+    })),
+  ];
+  if (includeClosedGroup) descriptors.push({ title: CLOSED_GROUP_TITLE, color: 'grey' });
+  return descriptors;
+}
+
+async function reconcileManagedTabGroupsUnlocked(windowId, options) {
+  const [settings, tabs, groups] = await Promise.all([
+    chrome.storage.local.get([
+      'bookmarksGroupColor', 'prGroupColor', 'closedIssueGroupEnabled',
+      'githubLabelGroupsEnabled', 'githubLabelGroupNames', 'githubLabelGroupColors'
+    ]),
+    chrome.tabs.query({ windowId }),
+    chrome.tabGroups.query({ windowId }),
+  ]);
+  if (groups.length === 0) return { orderedGroupCount: 0 };
+
+  const firstTabIndexByGroup = new Map();
+  for (const tab of tabs) {
+    if (!Number.isInteger(tab.groupId) || tab.groupId < 0) continue;
+    const currentIndex = firstTabIndexByGroup.get(tab.groupId);
+    if (currentIndex === undefined || tab.index < currentIndex) {
+      firstTabIndexByGroup.set(tab.groupId, tab.index);
+    }
+  }
+
+  const groupsByName = new Map();
+  const orderedGroups = groups.slice().sort((a, b) => (
+    (firstTabIndexByGroup.get(a.id) ?? Number.MAX_SAFE_INTEGER)
+    - (firstTabIndexByGroup.get(b.id) ?? Number.MAX_SAFE_INTEGER)
+  ));
+  for (const group of orderedGroups) {
+    const key = normalizeGitHubLabelName(group.title || '');
+    if (key && !groupsByName.has(key)) groupsByName.set(key, group);
+  }
+
+  const managedGroups = [];
+  for (const descriptor of getManagedTabGroupDescriptors(settings, options)) {
+    const group = groupsByName.get(normalizeGitHubLabelName(descriptor.title));
+    if (!group) continue;
+
+    const updates = {};
+    if (group.title !== descriptor.title) updates.title = descriptor.title;
+    if (group.color !== descriptor.color) updates.color = descriptor.color;
+    if (Object.keys(updates).length > 0) {
+      await chrome.tabGroups.update(group.id, updates);
+      Object.assign(group, updates);
+    }
+    managedGroups.push(group);
+  }
+
+  if (typeof chrome.tabGroups.move === 'function' && managedGroups.length > 0) {
+    const unpinnedTabs = tabs
+      .filter(tab => !tab.pinned)
+      .sort((a, b) => a.index - b.index);
+    let tabIndex = 0;
+    const alreadyOrdered = managedGroups.every(group => {
+      if (unpinnedTabs[tabIndex]?.groupId !== group.id) return false;
+      while (unpinnedTabs[tabIndex]?.groupId === group.id) tabIndex++;
+      return true;
+    });
+
+    if (!alreadyOrdered) {
+      const firstUnpinnedIndex = tabs.filter(tab => tab.pinned).length;
+      for (let index = managedGroups.length - 1; index >= 0; index--) {
+        await chrome.tabGroups.move(managedGroups[index].id, { index: firstUnpinnedIndex });
+      }
+    }
+  }
+
+  return { orderedGroupCount: managedGroups.length };
+}
+
+const managedGroupReconcilePromises = new Map();
+async function reconcileManagedTabGroups(windowId, options = {}) {
+  const targetWindowId = await resolveTargetWindowId(windowId);
+  const previousReconcile = managedGroupReconcilePromises.get(targetWindowId) || Promise.resolve();
+  const currentReconcile = previousReconcile
+    .catch(() => {})
+    .then(async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          return await reconcileManagedTabGroupsUnlocked(targetWindowId, options);
+        } catch (error) {
+          const retryable = /tabs cannot be edited|no group with id|cannot move|invalid value for bounds/i.test(
+            error?.message || ''
+          );
+          if (!retryable || attempt === 1) throw error;
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+      }
+      return { orderedGroupCount: 0 };
+    });
+  managedGroupReconcilePromises.set(targetWindowId, currentReconcile);
+
+  try {
+    return await currentReconcile;
+  } finally {
+    if (managedGroupReconcilePromises.get(targetWindowId) === currentReconcile) {
+      managedGroupReconcilePromises.delete(targetWindowId);
+    }
+  }
+}
+
+async function reconcileManagedTabGroupsSafely(windowId, options = {}) {
+  try {
+    return await reconcileManagedTabGroups(windowId, options);
+  } catch (error) {
+    console.warn('Could not update managed tab-group colors or order:', error);
+    return { orderedGroupCount: 0, warning: error?.message || String(error) };
+  }
 }
 
 function getManagedGitHubLabelGroupNames(settings, windowId) {
@@ -514,7 +657,7 @@ function stopLoadingSpinner() {
 }
 
 // Run organize with badge + notification feedback (for icon/context menu/command)
-async function runOrganizeWithFeedback(windowId) {
+async function runOrganizeWithFeedback(windowId, options = {}) {
   if (isOrganizing) return;
   isOrganizing = true;
 
@@ -533,6 +676,7 @@ async function runOrganizeWithFeedback(windowId) {
     const githubPrSync = await syncEnabledGitHubTabGroups(targetWindowId, {
       includePr: true,
       includeIssues: false,
+      includeLabelGroups: options.includeLabelGroups !== false,
     }).catch(() => ({ stopRemainingSyncs: false }));
     const ignoreQuery = settings.ignoreQuery !== false;
     const ignoreHash = settings.ignoreHash !== false;
@@ -543,6 +687,7 @@ async function runOrganizeWithFeedback(windowId) {
     const githubIssueSync = await syncEnabledGitHubTabGroups(targetWindowId, {
       includePr: false,
       includeIssues: true,
+      includeLabelGroups: options.includeLabelGroups !== false,
       blockedByEarlierSync: githubPrSync.stopRemainingSyncs,
     }).catch(() => ({ preservedTabIds: [] }));
 
@@ -582,6 +727,9 @@ async function runOrganizeWithFeedback(windowId) {
       });
       return;
     }
+    await reconcileManagedTabGroupsSafely(targetWindowId, {
+      includeLabelGroups: options.includeLabelGroups === false ? false : undefined,
+    });
     const fb = result.fallbackInfo;
     const titleSuccess = fb
       ? `Tabs organized (used ${providerLabel(fb.providerUsed)} fallback)`
@@ -614,7 +762,7 @@ async function runOrganizeWithFeedback(windowId) {
 }
 
 // Deduplicate then tidy pinned tabs (unpin non-matching, pin & order matching)
-async function runDedupeAndTidyPinned(windowId) {
+async function runDedupeAndTidyPinned(windowId, options = {}) {
   try {
     const targetWindowId = await resolveTargetWindowId(windowId);
     const settings = await chrome.storage.local.get([
@@ -623,6 +771,7 @@ async function runDedupeAndTidyPinned(windowId) {
     const githubPrSync = await syncEnabledGitHubTabGroups(targetWindowId, {
       includePr: true,
       includeIssues: false,
+      includeLabelGroups: options.includeLabelGroups !== false,
     }).catch(() => ({ stopRemainingSyncs: false }));
     const ignoreQuery = settings.ignoreQuery !== false;
     const ignoreHash = settings.ignoreHash !== false;
@@ -635,8 +784,12 @@ async function runDedupeAndTidyPinned(windowId) {
     await syncEnabledGitHubTabGroups(targetWindowId, {
       includePr: false,
       includeIssues: true,
+      includeLabelGroups: options.includeLabelGroups !== false,
       blockedByEarlierSync: githubPrSync.stopRemainingSyncs,
     }).catch(() => {});
+    await reconcileManagedTabGroupsSafely(targetWindowId, {
+      includeLabelGroups: options.includeLabelGroups === false ? false : undefined,
+    });
     if (result.success) {
       chrome.notifications.create({
         type: 'basic',
@@ -669,11 +822,14 @@ async function runDedupeAndTidyPinned(windowId) {
 // (or the full dedupe + AI organize flow when "Organize tabs on click" is enabled)
 chrome.action.onClicked.addListener(async (tab) => {
   try {
-    const { organizeOnClick } = await chrome.storage.local.get(['organizeOnClick']);
+    const { organizeOnClick, githubLabelGroupsOnClick } = await chrome.storage.local.get([
+      'organizeOnClick', 'githubLabelGroupsOnClick'
+    ]);
+    const options = { includeLabelGroups: githubLabelGroupsOnClick !== false };
     if (organizeOnClick === true) {
-      await runOrganizeWithFeedback(tab?.windowId);
+      await runOrganizeWithFeedback(tab?.windowId, options);
     } else {
-      await runDedupeAndTidyPinned(tab?.windowId);
+      await runDedupeAndTidyPinned(tab?.windowId, options);
     }
   } catch (error) {
     console.error('Error on extension icon click:', error);
@@ -1346,7 +1502,7 @@ async function dedupeAndTidyPinned(ignoreQuery, ignoreHash, windowId) {
 
     // Apply BOOKMARKS group colour if that group exists
     const colorSettings = await chrome.storage.local.get(['bookmarksGroupColor']);
-    const bookmarksColor = colorSettings.bookmarksGroupColor || 'yellow';
+    const bookmarksColor = normalizeTabGroupColor(colorSettings.bookmarksGroupColor, 'yellow');
     const groups = await chrome.tabGroups.query({ windowId: targetWindowId });
     const bookmarksGroup = groups.find(g => (g.title || '').trim().toUpperCase() === 'BOOKMARKS');
     if (bookmarksGroup) {
@@ -1562,19 +1718,22 @@ function normalizedPrUrl(rawUrl, ignoreQuery, ignoreHash) {
 }
 
 // Create or get PR tab group in window; sync tabs to match prUrls. Returns { success, message?, error? }.
-async function syncPrTabGroup(windowId) {
-  const settings = await chrome.storage.local.get(['githubToken', 'prGroupEnabled', 'ignoreQuery', 'ignoreHash']);
+async function syncPrTabGroup(windowId, presentationOptions = {}) {
+  const settings = await chrome.storage.local.get([
+    'githubToken', 'prGroupEnabled', 'prGroupColor', 'ignoreQuery', 'ignoreHash'
+  ]);
   if (!settings.githubToken?.trim()) {
     return { success: false, error: 'GitHub token not set' };
   }
   const targetWindowId = await resolveTargetWindowId(windowId);
   const win = await chrome.windows.get(targetWindowId);
+  const prGroupColor = normalizeTabGroupColor(settings.prGroupColor, 'blue');
   const { prUrls, error: fetchError } = await fetchOpenPrUrls(settings.githubToken);
   if (fetchError) return { success: false, error: fetchError };
   if (prUrls.length === 0) {
     // Clear the managed group without closing the user's tabs.
     const groups = await chrome.tabGroups.query({ windowId: win.id });
-    const prGroup = groups.find(g => (g.title || '').trim() === PR_GROUP_TITLE);
+    const prGroup = groups.find(g => normalizeGitHubLabelName(g.title) === normalizeGitHubLabelName(PR_GROUP_TITLE));
     let ungroupedCount = 0;
     if (prGroup) {
       const existingTabs = await chrome.tabs.query({ groupId: prGroup.id });
@@ -1587,6 +1746,7 @@ async function syncPrTabGroup(windowId) {
         ungroupedCount = existingTabIds.length;
       }
     }
+    await reconcileManagedTabGroupsSafely(win.id, presentationOptions);
     return {
       success: true,
       message: ungroupedCount > 0
@@ -1610,7 +1770,10 @@ async function syncPrTabGroup(windowId) {
 
   let prGroupId = null;
   const groups = await chrome.tabGroups.query({ windowId: win.id });
-  const prGroup = groups.find(g => (g.title || '').trim() === PR_GROUP_TITLE);
+  const prGroup = groups.find(g => normalizeGitHubLabelName(g.title) === normalizeGitHubLabelName(PR_GROUP_TITLE));
+  if (prGroup && (prGroup.title !== PR_GROUP_TITLE || prGroup.color !== prGroupColor)) {
+    await chrome.tabGroups.update(prGroup.id, { title: PR_GROUP_TITLE, color: prGroupColor });
+  }
 
   // Tabs already in PR group that match a current PR URL (normalized)
   const inPrGroupByNorm = new Map();
@@ -1651,7 +1814,7 @@ async function syncPrTabGroup(windowId) {
           tabIds: [sameUrlTab.id],
           createProperties: { windowId: win.id }
         });
-        await chrome.tabGroups.update(prGroupId, { title: PR_GROUP_TITLE, color: 'blue' });
+        await chrome.tabGroups.update(prGroupId, { title: PR_GROUP_TITLE, color: prGroupColor });
       } else {
         await chrome.tabs.group({ groupId: prGroupId, tabIds: [sameUrlTab.id] });
       }
@@ -1665,7 +1828,7 @@ async function syncPrTabGroup(windowId) {
         tabIds: [newTab.id],
         createProperties: { windowId: win.id }
       });
-      await chrome.tabGroups.update(prGroupId, { title: PR_GROUP_TITLE, color: 'blue' });
+      await chrome.tabGroups.update(prGroupId, { title: PR_GROUP_TITLE, color: prGroupColor });
     } else {
       await chrome.tabs.group({ groupId: prGroupId, tabIds: [newTab.id] });
     }
@@ -1691,6 +1854,7 @@ async function syncPrTabGroup(windowId) {
     }
   }
 
+  await reconcileManagedTabGroupsSafely(win.id, presentationOptions);
   return { success: true, message: `PR group updated with ${prUrls.length} PR(s).` };
 }
 
@@ -1755,11 +1919,9 @@ async function fetchGitHubIssueMetadata(githubToken, issue) {
     }
 
     const labels = Array.isArray(data.labels)
-      ? data.labels.map(label => ({
-          name: typeof label === 'string' ? label : label?.name,
-          color: typeof label === 'object' && label ? label.color : null,
-        }))
-          .filter(l => l.name && typeof l.name === 'string' && l.name.trim())
+      ? data.labels
+        .map(label => typeof label === 'string' ? label : label?.name)
+        .filter(label => typeof label === 'string' && label.trim())
       : [];
     return { issue, state: data.state, labels };
   } catch (error) {
@@ -1850,24 +2012,17 @@ async function fetchGitHubIssueMetadataForTabs(githubToken, issueTabs) {
 function selectGitHubIssueGroup(metadata, configuredLabelNames, closedIssueGroupEnabled) {
   if (!metadata || metadata.error || metadata.isPullRequest) return null;
   if (closedIssueGroupEnabled === true && metadata.state === 'closed') {
-    return { title: CLOSED_GROUP_TITLE, color: null };
+    return { title: CLOSED_GROUP_TITLE };
   }
 
-  const issueLabels = Array.isArray(metadata.labels)
-    ? metadata.labels.map(label => ({
-        name: typeof label === 'string' ? label : label?.name,
-        color: typeof label === 'object' && label ? label.color : null,
-      }))
-      .filter(l => l.name && typeof l.name === 'string')
-    : [];
-
-  const issueLabelKeys = new Set(issueLabels.map(l => normalizeGitHubLabelName(l.name)));
+  const issueLabelKeys = new Set(
+    (Array.isArray(metadata.labels) ? metadata.labels : [])
+      .map(label => typeof label === 'string' ? label : label?.name)
+      .map(normalizeGitHubLabelName)
+      .filter(Boolean)
+  );
   const matchedConfigured = configuredLabelNames.find(name => issueLabelKeys.has(normalizeGitHubLabelName(name)));
-  if (!matchedConfigured) return null;
-
-  // Find the original label object from the issue to get its actual GitHub color
-  const matchedIssueLabel = issueLabels.find(l => normalizeGitHubLabelName(l.name) === normalizeGitHubLabelName(matchedConfigured));
-  return { title: matchedConfigured, color: matchedIssueLabel?.color || null };
+  return matchedConfigured ? { title: matchedConfigured } : null;
 }
 
 async function filterUnchangedGitHubIssueTabs(candidates) {
@@ -1928,7 +2083,14 @@ async function syncGitHubIssueTabGroups(windowId, overrides = {}) {
   const previousSync = githubIssueSyncPromises.get(targetWindowId) || Promise.resolve();
   const currentSync = previousSync
     .catch(() => {})
-    .then(() => syncGitHubIssueTabGroupsUnlocked(targetWindowId, overrides));
+    .then(async () => {
+      const result = await syncGitHubIssueTabGroupsUnlocked(targetWindowId, overrides);
+      await reconcileManagedTabGroupsSafely(targetWindowId, {
+        includeLabelGroups: overrides.githubLabelGroupsEnabled,
+        includeClosedGroup: overrides.closedIssueGroupEnabled,
+      });
+      return result;
+    });
   githubIssueSyncPromises.set(targetWindowId, currentSync);
 
   try {
@@ -1943,11 +2105,13 @@ async function syncGitHubIssueTabGroups(windowId, overrides = {}) {
 async function syncGitHubIssueTabGroupsUnlocked(windowId, overrides = {}) {
   const settings = await chrome.storage.local.get([
     'githubToken', 'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
-    'githubLabelGroupNames', 'githubManagedLabelGroupNamesByWindow'
+    'githubLabelGroupNames', 'githubLabelGroupColors', 'githubManagedLabelGroupNamesByWindow',
+    'bookmarksGroupColor', 'prGroupColor'
   ]);
   const closedIssueGroupEnabled = overrides.closedIssueGroupEnabled ?? (settings.closedIssueGroupEnabled === true);
   const githubLabelGroupsEnabled = overrides.githubLabelGroupsEnabled ?? (settings.githubLabelGroupsEnabled === true);
   const configuredLabelNames = normalizeGitHubLabelGroupNames(settings.githubLabelGroupNames);
+  const configuredLabelColors = resolveGitHubLabelGroupColors(settings);
   const managedLabelNames = normalizeGitHubLabelGroupNames([
     ...getManagedGitHubLabelGroupNames(settings, windowId),
     ...configuredLabelNames,
@@ -2051,12 +2215,9 @@ async function syncGitHubIssueTabGroupsUnlocked(windowId, overrides = {}) {
       const targetKey = normalizeGitHubLabelName(target.title);
       const color = target.title === CLOSED_GROUP_TITLE
         ? 'grey'
-        : hexToChromeTabColor(target.color);
-      const desiredGroup = desiredGroupsByName.get(targetKey);
-      if (!desiredGroup) {
+        : configuredLabelColors.get(targetKey);
+      if (!desiredGroupsByName.has(targetKey)) {
         desiredGroupsByName.set(targetKey, { title: target.title, color });
-      } else if (!desiredGroup.color && color) {
-        desiredGroup.color = color;
       }
 
       if (currentGroupKey === targetKey) {
@@ -2194,6 +2355,7 @@ async function dedupeAndSyncGitHubLabelTabGroups(windowId) {
 async function syncEnabledGitHubTabGroups(windowId, stages = {}) {
   const includePr = stages.includePr !== false;
   const includeIssues = stages.includeIssues !== false;
+  const includeLabelGroups = stages.includeLabelGroups !== false;
   const settings = await chrome.storage.local.get([
     'githubToken', 'prGroupEnabled', 'closedIssueGroupEnabled', 'githubLabelGroupsEnabled',
     'githubLabelGroupNames', 'githubManagedLabelGroupNamesByWindow'
@@ -2204,10 +2366,13 @@ async function syncEnabledGitHubTabGroups(windowId, stages = {}) {
     ...getManagedGitHubLabelGroupNames(settings, targetWindowId),
   ]).length > 0;
   const prEnabled = includePr && settings.prGroupEnabled === true;
-  const issuesEnabled = includeIssues && (
-    settings.closedIssueGroupEnabled === true ||
-    (settings.githubLabelGroupsEnabled === true && hasManagedLabels)
-  );
+  const presentLabelGroups = includeLabelGroups && settings.githubLabelGroupsEnabled === true;
+  const closedIssuesEnabled = includeIssues && settings.closedIssueGroupEnabled === true;
+  const labelGroupsEnabled = includeIssues
+    && includeLabelGroups
+    && settings.githubLabelGroupsEnabled === true
+    && hasManagedLabels;
+  const issuesEnabled = closedIssuesEnabled || labelGroupsEnabled;
   if (!prEnabled && !issuesEnabled) {
     return { warnings: [], stopRemainingSyncs: false, preservedTabIds: [] };
   }
@@ -2249,10 +2414,15 @@ async function syncEnabledGitHubTabGroups(windowId, stages = {}) {
     };
 
     if (prEnabled) {
-      stopRemainingSyncs = await runSync(PR_GROUP_TITLE, () => syncPrTabGroup(windowId));
+      stopRemainingSyncs = await runSync(PR_GROUP_TITLE, () => syncPrTabGroup(windowId, {
+        includeLabelGroups: presentLabelGroups,
+      }));
     }
     if (issuesEnabled && !stopRemainingSyncs) {
-      stopRemainingSyncs = await runSync('GitHub issues', () => syncGitHubIssueTabGroups(windowId));
+      stopRemainingSyncs = await runSync('GitHub issues', () => syncGitHubIssueTabGroups(windowId, {
+        closedIssueGroupEnabled: closedIssuesEnabled,
+        githubLabelGroupsEnabled: labelGroupsEnabled,
+      }));
     }
   }
 
@@ -3371,7 +3541,7 @@ async function organizeTabs(
     const allExistingGroups = await chrome.tabGroups.query({ windowId: tabs[0].windowId });
     allExistingGroups.forEach(g => { if (g.color) usedColors.add(g.color); });
 
-    const allColors = ['blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange', 'grey'];
+    const allColors = CHROME_TAB_GROUP_COLORS;
 
     // First pass: process groups with 2+ tabs
     for (const group of groups) {
@@ -3630,7 +3800,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
 
       // A caller can omit preserveGroupsMinTabs. Use the saved value instead of 1.
       const minTabsRaw = request.preserveGroupsMinTabs ?? dedupeSettings.preserveGroupsMinTabs;
-      return organizeTabs(
+      const result = await organizeTabs(
         request.preserveGroups,
         request.mergeIntoExisting || false,
         request.customInstructions,
@@ -3638,6 +3808,8 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
         targetWindowId,
         githubIssueSync.preservedTabIds
       );
+      await reconcileManagedTabGroupsSafely(targetWindowId);
+      return result;
     })()
       .then(result => sendResponse(result))
       .catch(error => sendResponse({ success: false, error: error.message }));
@@ -3670,6 +3842,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
         includeIssues: true,
         blockedByEarlierSync: githubPrSync.stopRemainingSyncs,
       }).catch(() => {});
+      await reconcileManagedTabGroupsSafely(targetWindowId);
       return result;
     })()
       .then(result => sendResponse(result))

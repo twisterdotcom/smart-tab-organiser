@@ -1,5 +1,18 @@
 # Release notes
 
+## Unreleased
+
+### Added
+
+- Added a toolbar-click setting for GitHub label-group sync.
+- Added Chrome colour selectors for each configured GitHub label and the PRs group.
+
+### Changed
+
+- Configured settings now control label-group colours. GitHub label colours no longer control them.
+- Managed groups now appear after pinned tabs in this order: BOOKMARKS, PRs, configured labels, Closed.
+- Default label colours avoid the BOOKMARKS, PRs, and Closed colours until the available palette is full.
+
 ## 1.3.1 — August 20, 2026
 
 ### Changed

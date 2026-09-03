@@ -18,13 +18,10 @@ A Chrome extension that **deduplicates tabs**, **tidies pinned tab lists**, main
 
 - **AI tab organization**: Group tabs with OpenAI, Anthropic, Google, Chrome built-in AI, or a loopback model server. Cloud providers use your API key. Provider fallback is opt-in.
 - **Duplicate detection**: Same base URL with different anchors/hashes; optional ignore-query / ignore-hash rules; case-insensitive matching.
-- **Pinned URL list**: Pin, unpin, and order tabs to match a list you define (runs with the toolbar action or combined flows).
-- **GitHub tab groups** (optional): The extension maintains a **PRs** group and opens missing tabs for matching pull requests that GitHub returns.
-  - Stale PR tabs leave the group but remain open.
-  - The issue-label feature uses an optional ordered list of exact GitHub issue label names from settings.
-  - Label matching is exact and case-insensitive. The first configured matching label wins.
-  - If the **Closed** feature is enabled, a closed issue goes to **Closed** before label matching.
-  - The extension does not create empty label groups. Pinned and split-view tabs remain unchanged.
+- **BOOKMARKS and pinned URLs**: Pin, unpin, and order tabs from a list. Choose the BOOKMARKS group colour; the default is yellow.
+- **PRs** (optional): Maintain a group for open pull requests and review requests, and choose its colour. The default is blue. Stale PR tabs leave the group but remain open.
+- **Configured GitHub labels** (optional): Group issue tabs from an ordered list of exact label names. Matching ignores letter case, and the first match wins. Each label has a Chrome group colour. You can disable label sync on toolbar clicks without disabling manual refresh.
+- **Closed issues** (optional): Move closed issue tabs to **Closed**. Closed takes priority over configured labels. The extension does not change pinned or split-view tabs.
 - **Toolbar, context menu, and shortcut**: Left-click the icon, use its menu, or assign a shortcut at `chrome://extensions/shortcuts`.
 
 ## AI without a provider API key
@@ -81,7 +78,9 @@ For example, settings can contain this optional ordered list of exact GitHub iss
 3. `Bug`
 4. `New Feature`
 
-Label matching is exact and case-insensitive. The first configured matching label wins.
+Label matching is exact and case-insensitive. The first configured matching label wins. Colour selectors follow the configured order. A reordered label keeps its colour.
+
+GitHub label colours do not control Chrome group colours. The default colours use this order: red, green, purple, cyan, orange, pink, yellow, blue, grey. The extension reserves the current BOOKMARKS and PR colours, and grey.
 
 After normal dedupe, issues with `Overdue` go to **Overdue** first. Other issues go to **Daily**, **Bug**, or **New Feature**, as applicable.
 
@@ -90,6 +89,8 @@ An issue with `Bug` and `New Feature` goes to **Bug** because `Bug` appears firs
 If the **Closed** feature is enabled, a closed issue goes to **Closed** instead of a label group.
 
 The extension does not create empty groups. Pinned and split-view tabs remain unchanged.
+
+Managed groups appear after pinned tabs. Their order is BOOKMARKS, PRs, configured labels, and Closed. Configured labels use their settings order.
 
 ## Project structure
 
@@ -145,7 +146,9 @@ The extension does not create empty groups. Pinned and split-view tabs remain un
 
 ### Toolbar icon (default)
 
-Left-click runs **dedupe** then **tidy pinned tabs** (see in-app Options for the exact behaviour). The badge can show duplicate counts depending on settings.
+Left-click runs **dedupe** and then **tidy pinned tabs**. The action also refreshes enabled GitHub groups. You can disable label-group sync for toolbar clicks. Manual label refresh remains available.
+
+If **Organize tabs on extension icon click** is enabled, AI organization runs after the managed-group preparation. The badge can show the duplicate count.
 
 
 ### Context menu
@@ -182,7 +185,7 @@ Assign a key to **Organize tabs with AI** at `chrome://extensions/shortcuts`.
 |------------|-----|
 | `tabs` | Read tab URLs/titles, close tabs, reload, pin/unpin, reorder. |
 | `storage` | Save settings and optional API tokens locally. |
-| `tabGroups` | Create and update AI, PR, Closed, BOOKMARKS, and user-defined groups. |
+| `tabGroups` | Create and update BOOKMARKS, PR, configured-label, Closed, and AI groups. |
 | `notifications` | User feedback for long-running or batch actions (where implemented). |
 | `contextMenus` | Right-click commands for duplicate removal and tab organization. |
 | Host access for OpenAI, Anthropic, Gemini, GitHub | Used only for configured cloud AI and GitHub features. Cloud AI receives titles, sanitized URLs, custom instructions, and relevant group names. |

@@ -87,6 +87,7 @@ h1 {
       "info info"
       "actions actions"
       "duplicate pinned"
+      "github github"
       "ai ai";
     align-items: start;
   }
@@ -105,6 +106,10 @@ h1 {
 
   .settings-section:nth-child(4) {
     grid-area: pinned;
+  }
+
+  .settings-section--github {
+    grid-area: github;
   }
 
   .settings-section--ai {
@@ -239,6 +244,14 @@ input:checked + .slider:before {
 
 input:focus + .slider {
   box-shadow: 0 0 0 3px var(--accent-focus);
+}
+
+.setting-item--disabled {
+  opacity: 0.6;
+}
+
+.switch input:disabled + .slider {
+  cursor: not-allowed;
 }
 
 .actions-section {
@@ -540,6 +553,58 @@ footer {
 
 .github-label-groups-warning[hidden] {
   display: none;
+}
+
+.github-label-group-colors {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.github-label-group-colors:empty {
+  display: none;
+}
+
+.github-label-group-color-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 240px);
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+}
+
+.github-label-group-color-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.github-label-group-color-position {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.github-label-group-color-name {
+  overflow-wrap: anywhere;
+}
+
+.github-label-group-color-select {
+  max-width: none;
+}
+
+@media (max-width: 600px) {
+  .github-label-group-color-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .local-model-buttons {
