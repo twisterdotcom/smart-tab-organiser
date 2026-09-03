@@ -7,8 +7,54 @@ const PR_GROUP_TITLE = 'PRs';
 const CLOSED_GROUP_TITLE = 'Closed';
 const ALWAYS_PRESERVED_GROUP_NAMES = ['BOOKMARKS', 'PRS'];
 const RESERVED_GITHUB_LABEL_GROUP_NAMES = new Set(['BOOKMARKS', 'PRS', 'CLOSED', 'MISC']);
-const GITHUB_LABEL_GROUP_COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'cyan', 'grey'];
 const GITHUB_API_VERSION = '2022-11-28';
+
+// Pre-computed CIELAB values for Chrome tab group colors (approximate D65 illuminant)
+const CHROME_TAB_GROUP_LAB = new Map([
+  ['blue',    [32.3, 74.9, -30.0]],
+  ['gray',    [49.1, 0.8,  -9.7]],
+  ['green',   [56.3, -70.4, 40.9]],
+  ['orange',  [62.8, 56.0,  71.0]],
+  ['pink',    [66.0, 59.6,  37.7]],
+  ['purple',  [40.0, 48.0, -50.0]],
+  ['red',     [44.4, 71.6,  59.2]],
+  ['yellow',  [88.3, -15.2,  88.5]],
+]);
+
+/** Convert hex color to the nearest Chrome tab group color name. */
+function hexToChromeTabColor(hex) {
+  if (!hex || typeof hex !== 'string') return null;
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  if (isNaN(r) || isNaN(g) || isNaN(b)) return null;
+
+  // sRGB → linear
+  const rl = r <= 10 ? r / 3294.6 : Math.pow((r / 255 + 0.055) / 1.055, 2.4);
+  const gl = g <= 10 ? g / 3294.6 : Math.pow((g / 255 + 0.055) / 1.055, 2.4);
+  const bl = b <= 10 ? b / 3294.6 : Math.pow((b / 255 + 0.055) / 1.055, 2.4);
+
+  // Linear sRGB → XYZ (D65)
+  const x = (rl * 0.4124564 + gl * 0.3575761 + bl * 0.1804375) * 100;
+  const y = (rl * 0.2126729 + gl * 0.7151522 + bl * 0.0721750) * 100;
+  const z = (rl * 0.0193339 + gl * 0.1191920 + bl * 0.9503041) * 100;
+
+  // XYZ → LAB (D65 reference white)
+  const xn = 95.047, yn = 100.0, zn = 108.883;
+  const f = t => t > 0.008856 ? Math.cbrt(t) : (7.787 * t) + 16 / 116;
+  const fx = f(x / xn), fy = f(y / yn), fz = f(z / zn);
+  const L = (116 * fy) - 16, a = 500 * (fx - fy), bVal = 200 * (fy - fz);
+
+  // Find nearest Chrome tab color by Euclidean distance in LAB space
+  let bestName = null;
+  let bestDist = Infinity;
+  for (const [name, lab] of CHROME_TAB_GROUP_LAB) {
+    const dl = L - lab[0], da = a - lab[1], db = bVal - lab[2];
+    const dist = Math.sqrt(dl * dl + da * da + db * db);
+    if (dist < bestDist) { bestDist = dist; bestName = name; }
+  }
+  return bestName;
+}
 
 if (typeof chrome.storage.local.setAccessLevel === 'function') {
   chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }).catch(error => {
@@ -1705,9 +1751,11 @@ async function fetchGitHubIssueMetadata(githubToken, issue) {
     }
 
     const labels = Array.isArray(data.labels)
-      ? data.labels
-        .map(label => typeof label === 'string' ? label : label?.name)
-        .filter(label => typeof label === 'string' && label.trim())
+      ? data.labels.map(label => ({
+          name: typeof label === 'string' ? label : label?.name,
+          color: typeof label === 'object' && label ? label.color : null,
+        }))
+          .filter(l => l.name && typeof l.name === 'string' && l.name.trim())
       : [];
     return { issue, state: data.state, labels };
   } catch (error) {
@@ -1798,22 +1846,24 @@ async function fetchGitHubIssueMetadataForTabs(githubToken, issueTabs) {
 function selectGitHubIssueGroup(metadata, configuredLabelNames, closedIssueGroupEnabled) {
   if (!metadata || metadata.error || metadata.isPullRequest) return null;
   if (closedIssueGroupEnabled === true && metadata.state === 'closed') {
-    return CLOSED_GROUP_TITLE;
+    return { title: CLOSED_GROUP_TITLE, color: null };
   }
 
-  const issueLabelKeys = new Set(
-    (Array.isArray(metadata.labels) ? metadata.labels : [])
-      .map(label => typeof label === 'string' ? label : label?.name)
-      .map(normalizeGitHubLabelName)
-      .filter(Boolean)
-  );
-  return configuredLabelNames.find(name => issueLabelKeys.has(normalizeGitHubLabelName(name))) || null;
-}
+  const issueLabels = Array.isArray(metadata.labels)
+    ? metadata.labels.map(label => ({
+        name: typeof label === 'string' ? label : label?.name,
+        color: typeof label === 'object' && label ? label.color : null,
+      }))
+      .filter(l => l.name && typeof l.name === 'string')
+    : [];
 
-function githubLabelGroupColor(groupName, configuredLabelNames) {
-  const key = normalizeGitHubLabelName(groupName);
-  const index = configuredLabelNames.findIndex(name => normalizeGitHubLabelName(name) === key);
-  return GITHUB_LABEL_GROUP_COLORS[(index >= 0 ? index : 0) % GITHUB_LABEL_GROUP_COLORS.length];
+  const issueLabelKeys = new Set(issueLabels.map(l => normalizeGitHubLabelName(l.name)));
+  const matchedConfigured = configuredLabelNames.find(name => issueLabelKeys.has(normalizeGitHubLabelName(name)));
+  if (!matchedConfigured) return null;
+
+  // Find the original label object from the issue to get its actual GitHub color
+  const matchedIssueLabel = issueLabels.find(l => normalizeGitHubLabelName(l.name) === normalizeGitHubLabelName(matchedConfigured));
+  return { title: matchedConfigured, color: matchedIssueLabel?.color || null };
 }
 
 async function filterUnchangedGitHubIssueTabs(candidates) {
@@ -1973,13 +2023,13 @@ async function syncGitHubIssueTabGroupsUnlocked(windowId, overrides = {}) {
     }
     if (!issueMetadata.isPullRequest) checkedCount++;
 
-    const targetTitle = selectGitHubIssueGroup(
+    const target = selectGitHubIssueGroup(
       issueMetadata,
       githubLabelGroupsEnabled ? configuredLabelNames : [],
       closedIssueGroupEnabled
     );
-    if (targetTitle === CLOSED_GROUP_TITLE) closedCount++;
-    else if (targetTitle) labelMatchedCount++;
+    if (target && target.title === CLOSED_GROUP_TITLE) closedCount++;
+    else if (target) labelMatchedCount++;
 
     if (tab.pinned) {
       skippedPinnedCount++;
@@ -1992,15 +2042,15 @@ async function syncGitHubIssueTabGroupsUnlocked(windowId, overrides = {}) {
       continue;
     }
 
-    if (targetTitle) {
-      const targetKey = normalizeGitHubLabelName(targetTitle);
+    if (target) {
+      const targetKey = normalizeGitHubLabelName(target.title);
       if (currentGroupKey === targetKey) {
         alreadyGroupedCount++;
-        if (targetTitle !== CLOSED_GROUP_TITLE) activeManagedLabelNames.add(targetTitle);
+        if (target.title !== CLOSED_GROUP_TITLE) activeManagedLabelNames.add(target.title);
         continue;
       }
       if (!tabsByTarget.has(targetKey)) {
-        tabsByTarget.set(targetKey, { title: targetTitle, candidates: [] });
+        tabsByTarget.set(targetKey, { title: target.title, color: target.color, candidates: [] });
       }
       tabsByTarget.get(targetKey).candidates.push(candidate);
       continue;
@@ -2029,8 +2079,8 @@ async function syncGitHubIssueTabGroupsUnlocked(windowId, overrides = {}) {
       });
       const color = target.title === CLOSED_GROUP_TITLE
         ? 'grey'
-        : githubLabelGroupColor(target.title, configuredLabelNames);
-      await chrome.tabGroups.update(targetGroupId, { title: target.title, color });
+        : (target.color ? hexToChromeTabColor(target.color) : null);
+      await chrome.tabGroups.update(targetGroupId, { title: target.title, color: color || undefined });
       const newGroup = { id: targetGroupId, title: target.title, color };
       groupsById.set(targetGroupId, newGroup);
       groupsByName.set(targetKey, newGroup);
