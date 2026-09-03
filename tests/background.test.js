@@ -436,6 +436,28 @@ test('PR refresh ungroups only stale non-split PR tabs', async () => {
   assert.deepEqual(ungrouped, [202]);
 });
 
+test('GitHub label colors map to valid Chrome tab-group colors', () => {
+  const { context } = loadBackground();
+  const expectedColors = new Map([
+    ['d73a4a', 'red'],
+    ['0e8a16', 'green'],
+    ['0075ca', 'blue'],
+    ['ededed', 'grey'],
+    ['00ffff', 'cyan'],
+    ['fbca04', 'yellow'],
+    ['5319e7', 'purple'],
+  ]);
+
+  for (const [hex, expected] of expectedColors) {
+    assert.equal(context.hexToChromeTabColor(hex), expected);
+    assert.equal(context.hexToChromeTabColor(`#${hex}`), expected);
+  }
+
+  for (const invalid of [null, '', '#fff', 'not-a-color', 'd73a4ag']) {
+    assert.equal(context.hexToChromeTabColor(invalid), null);
+  }
+});
+
 test('GitHub label settings normalize names and apply Closed before label priority', () => {
   const { context } = loadBackground();
 
@@ -446,15 +468,18 @@ test('GitHub label settings normalize names and apply Closed before label priori
     ['Overdue', 'New Feature', 'Bug']
   );
 
-  const openIssue = { state: 'open', labels: ['Bug', { name: 'Overdue' }] };
-  assert.equal(
-    context.selectGitHubIssueGroup(openIssue, ['Overdue', 'Bug'], false),
-    'Overdue'
+  const openIssue = { state: 'open', labels: ['Bug', { name: 'Overdue', color: 'd73a4a' }] };
+  const openGroup = context.selectGitHubIssueGroup(openIssue, ['Overdue', 'Bug'], false);
+  assert.equal(openGroup.title, 'Overdue');
+  assert.equal(openGroup.color, 'd73a4a');
+
+  const closedGroup = context.selectGitHubIssueGroup(
+    { ...openIssue, state: 'closed' },
+    ['Overdue', 'Bug'],
+    true
   );
-  assert.equal(
-    context.selectGitHubIssueGroup({ ...openIssue, state: 'closed' }, ['Overdue', 'Bug'], true),
-    'Closed'
-  );
+  assert.equal(closedGroup.title, 'Closed');
+  assert.equal(closedGroup.color, null);
   assert.equal(
     context.selectGitHubIssueGroup({ ...openIssue, isPullRequest: true }, ['Overdue', 'Bug'], true),
     null
@@ -528,15 +553,17 @@ test('dedupe runs before GitHub issue labels and assigns the first matching grou
   };
   chrome.tabGroups.query = async () => groups.map(group => ({ ...group }));
   chrome.tabGroups.update = async (id, updates) => {
+    const validColors = new Set(['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange']);
+    if (updates.color !== undefined) assert.equal(validColors.has(updates.color), true);
     const group = groups.find(candidate => candidate.id === id);
     if (group) Object.assign(group, updates);
   };
 
   const issueData = {
-    1: { state: 'open', labels: [{ name: 'Daily' }, { name: 'Bug' }, { name: 'Overdue' }] },
-    2: { state: 'open', labels: [{ name: 'Weekly' }, { name: 'New Feature' }, { name: 'Overdue' }] },
-    3: { state: 'open', labels: [{ name: 'Weekly' }, { name: 'New Feature' }] },
-    4: { state: 'open', labels: [{ name: 'Monthly' }, { name: 'Bug' }] },
+    1: { state: 'open', labels: [{ name: 'Daily', color: 'fbca04' }, { name: 'Bug', color: '0e8a16' }, { name: 'Overdue', color: 'd73a4a' }] },
+    2: { state: 'open', labels: [{ name: 'Weekly', color: '5319e7' }, { name: 'New Feature', color: '0075ca' }, { name: 'Overdue', color: 'd73a4a' }] },
+    3: { state: 'open', labels: [{ name: 'Weekly', color: '5319e7' }, { name: 'New Feature', color: '0075ca' }] },
+    4: { state: 'open', labels: [{ name: 'Monthly', color: 'fbca04' }, { name: 'Bug', color: '0e8a16' }] },
   };
   context.fetch = async (url) => {
     const match = url.match(/\/issues\/(\d+)$/);
@@ -570,7 +597,17 @@ test('dedupe runs before GitHub issue labels and assigns the first matching grou
     'New Feature': [4],
     Bug: [5],
   });
+  assert.equal(groups.find(group => group.title === 'Overdue').color, 'red');
+  assert.equal(groups.find(group => group.title === 'New Feature').color, 'blue');
+  assert.equal(groups.find(group => group.title === 'Bug').color, 'green');
   assert.equal(groups.some(group => group.title === 'Daily'), false);
+
+  const overdueGroup = groups.find(group => group.title === 'Overdue');
+  overdueGroup.color = 'grey';
+  const recolorResult = await context.syncGitHubIssueTabGroups(1);
+  assert.equal(recolorResult.success, true);
+  assert.equal(recolorResult.movedCount, 0);
+  assert.equal(overdueGroup.color, 'red');
 
   const groupTitleForTab = (tabId) => {
     const tab = tabs.find(candidate => candidate.id === tabId);

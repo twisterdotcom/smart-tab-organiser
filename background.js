@@ -9,25 +9,29 @@ const ALWAYS_PRESERVED_GROUP_NAMES = ['BOOKMARKS', 'PRS'];
 const RESERVED_GITHUB_LABEL_GROUP_NAMES = new Set(['BOOKMARKS', 'PRS', 'CLOSED', 'MISC']);
 const GITHUB_API_VERSION = '2022-11-28';
 
-// Pre-computed CIELAB values for Chrome tab group colors (approximate D65 illuminant)
+// Representative Chromium tab-group tones converted to CIELAB (D65).
 const CHROME_TAB_GROUP_LAB = new Map([
-  ['blue',    [32.3, 74.9, -30.0]],
-  ['gray',    [49.1, 0.8,  -9.7]],
-  ['green',   [56.3, -70.4, 40.9]],
-  ['orange',  [62.8, 56.0,  71.0]],
-  ['pink',    [66.0, 59.6,  37.7]],
-  ['purple',  [40.0, 48.0, -50.0]],
-  ['red',     [44.4, 71.6,  59.2]],
-  ['yellow',  [88.3, -15.2,  88.5]],
+  ['grey',   [70.1, -1.4,   0.7]],
+  ['blue',   [69.8,  4.4, -43.4]],
+  ['red',    [70.3, 41.7,  22.1]],
+  ['yellow', [70.1, 23.2,  63.1]],
+  ['green',  [69.8, -50.3, 31.4]],
+  ['pink',   [70.3, 55.4, -18.1]],
+  ['purple', [70.4, 34.4, -42.0]],
+  ['cyan',   [70.4, -21.9, -32.4]],
+  ['orange', [70.1, 36.1,  51.0]],
 ]);
 
-/** Convert hex color to the nearest Chrome tab group color name. */
+/** Convert a six-digit hex color to the nearest Chrome tab group color name. */
 function hexToChromeTabColor(hex) {
-  if (!hex || typeof hex !== 'string') return null;
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  if (isNaN(r) || isNaN(g) || isNaN(b)) return null;
+  if (typeof hex !== 'string') return null;
+  const match = hex.trim().match(/^#?([0-9a-f]{6})$/i);
+  if (!match) return null;
+
+  const normalizedHex = match[1];
+  const r = Number.parseInt(normalizedHex.slice(0, 2), 16);
+  const g = Number.parseInt(normalizedHex.slice(2, 4), 16);
+  const b = Number.parseInt(normalizedHex.slice(4, 6), 16);
 
   // sRGB → linear
   const rl = r <= 10 ? r / 3294.6 : Math.pow((r / 255 + 0.055) / 1.055, 2.4);
@@ -1995,6 +1999,7 @@ async function syncGitHubIssueTabGroupsUnlocked(windowId, overrides = {}) {
   }
 
   const managedLabelKeys = new Set(managedLabelNames.map(normalizeGitHubLabelName));
+  const desiredGroupsByName = new Map();
   const tabsByTarget = new Map();
   const staleCandidates = [];
   const activeManagedLabelNames = new Set();
@@ -2044,15 +2049,23 @@ async function syncGitHubIssueTabGroupsUnlocked(windowId, overrides = {}) {
 
     if (target) {
       const targetKey = normalizeGitHubLabelName(target.title);
+      const color = target.title === CLOSED_GROUP_TITLE
+        ? 'grey'
+        : hexToChromeTabColor(target.color);
+      const desiredGroup = desiredGroupsByName.get(targetKey);
+      if (!desiredGroup) {
+        desiredGroupsByName.set(targetKey, { title: target.title, color });
+      } else if (!desiredGroup.color && color) {
+        desiredGroup.color = color;
+      }
+
       if (currentGroupKey === targetKey) {
         alreadyGroupedCount++;
         if (target.title !== CLOSED_GROUP_TITLE) activeManagedLabelNames.add(target.title);
         continue;
       }
-      if (!tabsByTarget.has(targetKey)) {
-        tabsByTarget.set(targetKey, { title: target.title, color: target.color, candidates: [] });
-      }
-      tabsByTarget.get(targetKey).candidates.push(candidate);
+      if (!tabsByTarget.has(targetKey)) tabsByTarget.set(targetKey, []);
+      tabsByTarget.get(targetKey).push(candidate);
       continue;
     }
 
@@ -2060,12 +2073,28 @@ async function syncGitHubIssueTabGroupsUnlocked(windowId, overrides = {}) {
     if (isManagedLabelGroup || isManagedClosedGroup) staleCandidates.push(candidate);
   }
 
+  for (const [targetKey, desiredGroup] of desiredGroupsByName) {
+    const existingGroup = groupsByName.get(targetKey);
+    if (!existingGroup) continue;
+
+    const updates = {};
+    if (existingGroup.title !== desiredGroup.title) updates.title = desiredGroup.title;
+    if (desiredGroup.color && existingGroup.color !== desiredGroup.color) updates.color = desiredGroup.color;
+    if (Object.keys(updates).length === 0) continue;
+
+    await chrome.tabGroups.update(existingGroup.id, updates);
+    Object.assign(existingGroup, updates);
+  }
+
   let movedCount = 0;
-  for (const [targetKey, target] of tabsByTarget) {
-    const safeTabIds = await filterUnchangedGitHubIssueTabs(target.candidates);
+  for (const [targetKey, candidates] of tabsByTarget) {
+    const target = desiredGroupsByName.get(targetKey);
+    if (!target) continue;
+
+    const safeTabIds = await filterUnchangedGitHubIssueTabs(candidates);
     if (safeTabIds.length === 0) continue;
     const safeTabIdSet = new Set(safeTabIds);
-    const safeCandidates = target.candidates.filter(candidate => safeTabIdSet.has(candidate.tab.id));
+    const safeCandidates = candidates.filter(candidate => safeTabIdSet.has(candidate.tab.id));
 
     const existingGroup = groupsByName.get(targetKey);
     let targetGroupId;
@@ -2077,11 +2106,10 @@ async function syncGitHubIssueTabGroupsUnlocked(windowId, overrides = {}) {
         tabIds: safeTabIds,
         createProperties: { windowId: win.id },
       });
-      const color = target.title === CLOSED_GROUP_TITLE
-        ? 'grey'
-        : (target.color ? hexToChromeTabColor(target.color) : null);
-      await chrome.tabGroups.update(targetGroupId, { title: target.title, color: color || undefined });
-      const newGroup = { id: targetGroupId, title: target.title, color };
+      const updates = { title: target.title };
+      if (target.color) updates.color = target.color;
+      await chrome.tabGroups.update(targetGroupId, updates);
+      const newGroup = { id: targetGroupId, title: target.title, color: target.color };
       groupsById.set(targetGroupId, newGroup);
       groupsByName.set(targetKey, newGroup);
     }
