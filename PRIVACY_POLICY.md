@@ -81,9 +81,9 @@ API key use depends on the selected host. Some hosts require a key, and some sel
 
 The extension requests host permission for a custom host only when the user tests that host or starts organization with it. The request is scoped to the configured host origin.
 
-For remote custom hosts, the extension requires HTTPS. The extension blocks remote `http://` custom hosts to avoid sending prompts or credentials without transport encryption.
+For custom hosts on the public internet, the extension requires HTTPS. The extension blocks public `http://` custom hosts to avoid sending prompts or credentials without transport encryption.
 
-The extension allows `http://` only for the statically permitted loopback hosts on the same computer (`localhost` and `127.0.0.1`).
+The extension allows `http://` only for hosts that cannot leave the user's own machine or local network: the statically permitted loopback hosts on the same computer (`localhost` and `127.0.0.1`), and private-network addresses — `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10` (carrier-grade NAT, including Tailscale), `169.254.0.0/16`, and the IPv6 ranges `fc00::/7` and `fe80::/10`. Every private-network host still needs its own origin-scoped permission, which the user grants from the options page.
 
 ### Provider fallback
 
@@ -101,13 +101,13 @@ Chrome can download the local model from Google. Chrome controls that model down
 
 ### Local model server
 
-The local-model feature sends the AI prompt to `localhost` or `127.0.0.1`. This loopback request goes to software on the same computer, such as Ollama or LM Studio.
+The local-model feature sends the AI prompt to a server on the user's own computer or local network. That is either a loopback host (`localhost`, `127.0.0.1`, or another address in `127.0.0.0/8`) or a private-network address as listed above, such as `192.168.1.20`. A server on another machine in the network requires the user to grant host access for that host from the options page.
 
 The extension sends tab URLs without query parameters or fragments. URL paths can still contain personal or sensitive information.
 
 The server configuration determines whether the server processes the prompt locally or forwards it elsewhere. The server also controls its logs and data retention.
 
-The local server can use HTTP because the first network hop stays on the same computer. The extension does not permit another computer or network host.
+The local server can use HTTP because the first network hop stays on the user's own machine or network. A request to a loopback host stays on the same computer. A request to a private-network host can be read by other devices on that local network, so it is unencrypted and should only be used on a network the user trusts. The extension does not permit any other `http://` host for this feature.
 
 The extension developer does not receive local-model requests or responses.
 
@@ -138,7 +138,7 @@ The extension shares data only for the user-facing features described in this po
 - With OpenAI, Anthropic, or Google when the user starts cloud AI organization, including an enabled fallback
 - With a configured custom OpenAI-compatible host when the user tests that host or starts AI organization with it
 - With GitHub when the user enables or starts a GitHub group feature
-- With a loopback model server when the user selects the local-model provider
+- With a local model server when the user selects the local-model provider — on the same computer, or on the user's own network when they have granted host access for that host
 
 The extension does not sell user data. It does not use user data for advertising, credit decisions, or unrelated profiling.
 
@@ -150,7 +150,7 @@ Chrome removes extension-local storage when the user uninstalls the extension. A
 
 ## Security
 
-Cloud AI and GitHub requests use HTTPS. Custom OpenAI-compatible hosts require HTTPS unless they are loopback hosts on the same computer. Local-model requests are restricted to loopback addresses on the same computer. The loopback server controls any later connection.
+Cloud AI and GitHub requests use HTTPS. Custom OpenAI-compatible hosts require HTTPS unless they are loopback hosts on the same computer or a private-network host, each of which needs its own granted origin permission. Local-model requests are restricted to loopback addresses and private-network addresses. Plain HTTP to a private-network host is unencrypted on that network; the server controls any later connection.
 
 The extension package contains all executable code. It does not download or execute remote JavaScript or WebAssembly.
 
@@ -164,7 +164,8 @@ The extension package contains all executable code. It does not download or exec
 | `notifications` | Show progress, results, and errors for user-started operations. |
 | `contextMenus` | Add tab-management commands to the extension action menu. |
 | AI API hosts | Send user-started requests to the selected cloud AI provider. |
-| Optional host permission (`https://*/*`) | Allow runtime, origin-scoped HTTPS access for a configured custom OpenAI-compatible host after a user gesture. Loopback HTTP uses the static `localhost` and `127.0.0.1` permissions above. |
+| Optional host permission (`https://*/*`) | Allow runtime, origin-scoped HTTPS access for a configured custom OpenAI-compatible host after a user gesture. |
+| Optional host permission (`http://*/*`) | Allow runtime, origin-scoped HTTP access to a private-network host on the user's own network (for example `192.168.1.20` or `100.64.0.1`) after a user gesture. Chrome match patterns cannot express a private range, so the request is scoped to the single origin the user typed. The extension requests this only for private-network hosts and never for a public `http://` host. Loopback HTTP uses the static `localhost` and `127.0.0.1` permissions above. |
 | `api.github.com` | Run optional GitHub PR, Closed, and issue-label group features. |
 | `localhost` and `127.0.0.1` | Contact an optional model server on the same computer. |
 

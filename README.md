@@ -9,15 +9,15 @@ A Chrome extension that **deduplicates tabs**, **tidies pinned tab lists**, main
 
 - **Local storage**: Settings and optional credentials use `chrome.storage.local`. A credential goes only to its issuing service when you use that feature.
 - **No analytics**: No telemetry or tracking from this extension.
-- **Local AI options**: Chrome built-in AI processes prompts on your computer. A loopback provider sends prompts only to a server on your computer.
+- **Local AI options**: Chrome built-in AI processes prompts on your computer. The local model provider sends prompts only to a server on your computer or your own local network.
 - **Optional cloud features**: Cloud AI and GitHub tab groups send data only after you configure a provider and use the applicable feature.
-- **Custom OpenAI-compatible hosts**: The extension requests host access for a custom host only when you test or use that host. Remote custom hosts must use HTTPS. Plain HTTP is allowed only for loopback hosts on your own computer.
+- **Custom OpenAI-compatible hosts**: The extension requests host access for a custom host only when you test or use that host. Remote custom hosts must use HTTPS. Plain HTTP is allowed only for loopback hosts and private-network addresses (for example `192.168.1.20` or `100.64.0.1`).
 - [Privacy Policy](PRIVACY_POLICY.md)
 - [Release notes](RELEASE_NOTES.md)
 
 ## Key features
 
-- **AI tab organization**: Group tabs with OpenAI, Anthropic, Google, Chrome built-in AI, a custom OpenAI-compatible host, or a loopback model server. Cloud providers usually use an API key. Provider fallback is opt-in.
+- **AI tab organization**: Group tabs with OpenAI, Anthropic, Google, Chrome built-in AI, a custom OpenAI-compatible host, or a local model server. Cloud providers usually use an API key. Provider fallback is opt-in.
 - **Automatic organization** (optional): Automatically organize tabs after opening a new tab, with configurable delay (1-60 seconds). Disabled by default to avoid unexpected AI calls and costs.
 - **Duplicate detection**: Same base URL with different anchors/hashes; optional ignore-query / ignore-hash rules; case-insensitive matching.
 - **BOOKMARKS and pinned URLs**: Pin, unpin, and order tabs from a list. Choose the BOOKMARKS group colour; the default is yellow.
@@ -28,15 +28,15 @@ A Chrome extension that **deduplicates tabs**, **tidies pinned tab lists**, main
 
 ## AI without a provider API key
 
-Chrome built-in AI and the loopback provider do not need a provider API key.
+Chrome built-in AI and the local model server do not need a provider API key.
 
-Provider fallback is off by default. If you enable it, a local provider can try the other local provider. Chrome built-in AI joins only after its model is downloaded. The loopback provider joins only after you set a model name.
+Provider fallback is off by default. If you enable it, a local provider can try the other local provider. Chrome built-in AI joins only after its model is downloaded. The local model server joins only after you set a model name.
 
 Cloud fallback requires a separate opt-in. Each attempted cloud provider receives the same sanitized tab data. A provider can receive the prompt even when its request fails.
 
 When the selected provider is **OpenAI Compatible API Host**, you must set a base URL and model name. API key use depends on the host. During test or organization, the extension requests access only to the configured host origin.
 
-For custom hosts on another machine or network, use `https://`. Remote `http://` endpoints are blocked. `http://` is supported only for loopback hosts (for example `localhost` and `127.0.0.1`).
+For custom hosts on another machine or network, use `https://`. Public `http://` endpoints are blocked. `http://` is supported for loopback hosts (for example `localhost` and `127.0.0.1`) and for private-network addresses: `10.x`, `172.16`–`172.31.x`, `192.168.x`, `100.64`–`100.127.x` (CGNAT and Tailscale), `169.254.x`, and IPv6 `fc00::/7` or `fe80::/10`. Loopback needs no permission; every other host is asked for once, the first time you test it.
 
 ### Chrome built-in AI (Gemini Nano)
 
@@ -48,9 +48,9 @@ Nothing to install — the model runs inside Chrome itself.
 - Chrome downloads the model (a few GB) on first use. Because the download can need a user gesture that a service worker doesn't have, use **Options → Check availability → Download model** to fetch it up front.
 - Gemini Nano is smaller than cloud models, so grouping is coarser. The extension organizes tabs in **batches of 20** and merges matching group names.
 
-### Loopback model server (Ollama, LM Studio, llama.cpp, vLLM)
+### Local model server (Ollama, LM Studio, llama.cpp, vLLM)
 
-The extension connects only to an OpenAI-compatible server on `localhost` or `127.0.0.1`. The server configuration controls local processing and any forwarding.
+The extension connects only to an OpenAI-compatible server on this computer or your own local network: `localhost`, `127.0.0.1`, or a private-network address such as `192.168.1.20`. A server elsewhere on the network needs host access, which **Test connection** requests once. The server configuration controls local processing and any forwarding.
 
 1. Install a runtime and pull a model. For example, use `ollama pull llama3.1:8b`.
 2. **Start the server so it accepts requests from extensions.** Ollama rejects unknown origins, so it must be launched with:
@@ -60,12 +60,13 @@ The extension connects only to an OpenAI-compatible server on `localhost` or `12
    ```
 
    In LM Studio, enable CORS in the local server settings. llama.cpp's server allows this by default.
-3. In Options, set the **server address** (default `http://localhost:11434/v1`). Then enter the exact model name that the server reports, such as `llama3.1:8b` or `qwen3:8b`. **Test connection** lists available models.
+3. In Options, set the **server address** (default `http://localhost:11434/v1`). Then enter the exact model name that the server reports, such as `llama3.1:8b` or `qwen3:8b`. **Test connection** lists available models, and grants host access if the server is on another machine in your network.
 
 Notes:
 
 - Local generation is slow. A 35B model takes roughly one minute for 12 tabs. Requests stop after three minutes. If a timeout occurs, use a smaller model or organize fewer tabs.
 - Small models are less reliable at emitting bare JSON, so a stricter retry is attempted automatically before failing.
+- A server on another machine must listen on your network interface and be allowed by your firewall, not only on `127.0.0.1`.
 
 ## Example: GitHub issue tabs
 
@@ -118,7 +119,7 @@ Managed groups appear after pinned tabs. Their order is BOOKMARKS, PRs, configur
 
 - **Google Chrome**, **Microsoft Edge**, or another **Chromium** browser with unpacked extensions.
 - For **cloud AI organization**: an API key from OpenAI, Anthropic, Google, or more than one provider.
-- For **AI without a provider key**: Chrome 138+ on supported hardware, or a loopback OpenAI-compatible server such as [Ollama](https://ollama.com). See [AI without a provider API key](#ai-without-a-provider-api-key).
+- For **AI without a provider key**: Chrome 138+ on supported hardware, or a local OpenAI-compatible server such as [Ollama](https://ollama.com) on this computer or your network. See [AI without a provider API key](#ai-without-a-provider-api-key).
 - For **GitHub tab groups**: a GitHub personal access token with access to the applicable repositories.
 
 ### Steps
@@ -195,8 +196,9 @@ Assign a key to **Organize tabs with AI** at `chrome://extensions/shortcuts`.
 | `notifications` | User feedback for long-running or batch actions (where implemented). |
 | `contextMenus` | Right-click commands for duplicate removal and tab organization. |
 | Host access for OpenAI, Anthropic, Gemini, GitHub | Used only for configured cloud AI and GitHub features. Cloud AI receives titles, sanitized URLs, custom instructions, and relevant group names. |
-| Optional host access for custom OpenAI-compatible hosts | Requested at runtime only when you test or use a configured custom host. Remote hosts must use HTTPS. |
-| Host access for `localhost` / `127.0.0.1` | Reaches a loopback model server. The extension rejects other hosts. |
+| Optional host access for custom OpenAI-compatible hosts | Requested at runtime only when you test or use a configured custom host. Public hosts must use HTTPS. |
+| Host access for `localhost` / `127.0.0.1` | Reaches a model server on this computer with no prompt. |
+| Optional host access for private-network hosts | Requested at runtime only when you test or use a host on your own network (`10.x`, `172.16`–`172.31.x`, `192.168.x`, `100.64`–`100.127.x`, `169.254.x`, IPv6 `fc00::/7`, `fe80::/10`). No other `http://` host is reachable. |
 
 Details: [PRIVACY_POLICY.md](PRIVACY_POLICY.md).
 

@@ -247,7 +247,7 @@
             <option value="claude">Claude (cloud)</option>
             <option value="gemini">Gemini (cloud)</option>
             <option value="chrome-ai">Chrome built-in AI (on-device)</option>
-            <option value="local">Loopback model server — Ollama / LM Studio</option>
+            <option value="local">Local model server — Ollama / LM Studio</option>
             <option value="custom-openai">OpenAI Compatible API Host</option>
           </select>
         </div>
@@ -328,10 +328,10 @@
           </div>
 
           <div class="provider-card" data-provider="local">
-            <div class="provider-card-header">Loopback model server <span class="primary-badge">Primary</span></div>
-            <p class="provider-card-desc">The extension sends prompts only to localhost or 127.0.0.1. The server configuration determines whether it processes data locally or forwards it elsewhere. Compatible servers include Ollama, LM Studio, llama.cpp, and vLLM.</p>
+            <div class="provider-card-header">Local model server <span class="primary-badge">Primary</span></div>
+            <p class="provider-card-desc">The extension sends prompts to a server on this computer or on your local network: <code>localhost</code>, <code>127.0.0.1</code>, or a private address such as <code>192.168.1.20</code>. A server elsewhere on the network needs host access, which "Test connection" asks for once. The server configuration determines whether it processes data locally or forwards it elsewhere. Compatible servers include Ollama, LM Studio, llama.cpp, and vLLM.</p>
             <label class="field-label" for="localBaseUrl">Server address</label>
-            <input type="text" id="localBaseUrl" class="api-key-input" placeholder="http://localhost:11434/v1" spellcheck="false">
+            <input type="text" id="localBaseUrl" class="api-key-input" placeholder="http://localhost:11434/v1" spellcheck="false" title="localhost, 127.0.0.1, or a private-network address such as http://192.168.1.20:11434/v1">
             <label class="field-label" for="localModel">Model name</label>
             <input type="text" id="localModel" class="api-key-input" placeholder="llama3.1:8b" spellcheck="false">
             <div class="local-model-buttons">
@@ -511,6 +511,7 @@
     </footer>
   </div>
   <script src="ai-models.js"></script>
+  <script src="host-access.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

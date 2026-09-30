@@ -1,5 +1,5 @@
 // Background service worker for Smart Tab Organiser extension
-importScripts('ai-models.js');
+importScripts('ai-models.js', 'host-access.js');
 
 console.log('Smart Tab Organiser extension background service worker loaded');
 
@@ -415,29 +415,38 @@ function providerLabel(provider) {
   return PROVIDER_LABELS[provider] || provider;
 }
 
-function normalizeHostname(hostname) {
-  const value = String(hostname || '').trim().toLowerCase();
-  if (value.startsWith('[') && value.endsWith(']')) {
-    return value.slice(1, -1);
+/**
+ * Ask Chrome for one origin, turning the API's rejection (an unsupported match
+ * pattern, for example) into a message the options page can show.
+ */
+async function requestOriginPermission(originPattern, provider) {
+  let granted;
+  try {
+    granted = await chrome.permissions.request({ origins: [originPattern] });
+  } catch (error) {
+    throw new AiProviderError({
+      provider,
+      message: `Chrome refused host access for ${originPattern}: ${error?.message || String(error)}`
+    });
   }
-  return value;
+  if (!granted) {
+    throw new Error(`Permission for ${originPattern} was not granted.`);
+  }
 }
 
-function isLoopbackHostname(hostname) {
-  const value = normalizeHostname(hostname);
-  return value === 'localhost' || value === '127.0.0.1' || value === '::1';
+async function hasOriginPermission(originPattern) {
+  try {
+    return await chrome.permissions.contains({ origins: [originPattern] });
+  } catch {
+    return false; // Chrome rejected the pattern, so treat it as not granted.
+  }
 }
 
-function isStaticallyAllowedLoopbackHost(urlObj) {
-  if (!isLoopbackHostname(urlObj?.hostname)) return false;
-  const protocol = String(urlObj?.protocol || '').toLowerCase();
-  if (protocol !== 'http:') return false;
-  const host = String(urlObj?.hostname || '').toLowerCase();
-  return host === 'localhost' || host === '127.0.0.1';
-}
-
-function customOpenAIOriginPattern(urlObj) {
-  return `${urlObj.protocol}//${urlObj.host}/*`;
+function insecureHttpMessage(provider, subject) {
+  return new AiProviderError({
+    provider,
+    message: `${subject} must use HTTPS. ${globalThis.HostAccess.ALLOWED_HTTP_HOSTS_HINT}`
+  });
 }
 
 async function ensureCustomOpenAIHostPermission(baseUrl, requestPermission = false) {
@@ -451,20 +460,17 @@ async function ensureCustomOpenAIHostPermission(baseUrl, requestPermission = fal
     });
   }
 
-  if (isStaticallyAllowedLoopbackHost(urlObj)) {
+  if (globalThis.HostAccess.isStaticallyAllowedUrl(urlObj)) {
     return;
   }
 
-  if (urlObj.protocol !== 'https:') {
-    throw new AiProviderError({
-      provider: 'custom-openai',
-      message: 'Remote OpenAI-compatible hosts must use HTTPS. Use HTTPS, or keep HTTP only for localhost/127.0.0.1.'
-    });
+  // HTTPS anywhere; plain HTTP only to a machine on the user's own network.
+  if (urlObj.protocol !== 'https:' && !globalThis.HostAccess.allowsPlainHttpUrl(urlObj)) {
+    throw insecureHttpMessage('custom-openai', 'Remote OpenAI-compatible hosts');
   }
 
-  const originPattern = customOpenAIOriginPattern(urlObj);
-  const hasPermission = await chrome.permissions.contains({ origins: [originPattern] });
-  if (hasPermission) {
+  const originPattern = globalThis.HostAccess.originPattern(urlObj);
+  if (await hasOriginPermission(originPattern)) {
     return;
   }
 
@@ -475,10 +481,7 @@ async function ensureCustomOpenAIHostPermission(baseUrl, requestPermission = fal
     });
   }
 
-  const granted = await chrome.permissions.request({ origins: [originPattern] });
-  if (!granted) {
-    throw new Error(`Permission for ${originPattern} was not granted.`);
-  }
+  await requestOriginPermission(originPattern, 'custom-openai');
 }
 
 async function customOpenAIHostAccessStatus(rawBaseUrl) {
@@ -499,17 +502,16 @@ async function customOpenAIHostAccessStatus(rawBaseUrl) {
     return { status: 'invalid-base-url' };
   }
 
-  if (isStaticallyAllowedLoopbackHost(urlObj)) {
+  if (globalThis.HostAccess.isStaticallyAllowedUrl(urlObj)) {
     return { status: 'ready', baseUrl };
   }
 
-  if (urlObj.protocol !== 'https:') {
+  if (urlObj.protocol !== 'https:' && !globalThis.HostAccess.allowsPlainHttpUrl(urlObj)) {
     return { status: 'insecure-http-url', baseUrl };
   }
 
-  const originPattern = customOpenAIOriginPattern(urlObj);
-  const hasPermission = await chrome.permissions.contains({ origins: [originPattern] });
-  if (!hasPermission) {
+  const originPattern = globalThis.HostAccess.originPattern(urlObj);
+  if (!(await hasOriginPermission(originPattern))) {
     return { status: 'missing-host-permission', baseUrl, originPattern };
   }
   return { status: 'ready', baseUrl, originPattern };
@@ -3092,24 +3094,59 @@ function normalizeLocalBaseUrl(rawUrl) {
   return url;
 }
 
-/** True when the address exactly matches a loopback origin allowed by the manifest. */
+/**
+ * A local model server is either loopback or another machine on the user's own
+ * network. Public hosts belong to the OpenAI Compatible provider instead, which
+ * has its own key and host-permission handling.
+ */
 function isAllowedLocalModelUrl(url) {
+  let parsed;
   try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'http:' && (
-      parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1'
-    );
+    parsed = new URL(url);
   } catch {
     return false;
   }
+  const protocol = String(parsed.protocol || '').toLowerCase();
+  if (protocol === 'http:') {
+    return globalThis.HostAccess.allowsPlainHttpUrl(parsed);
+  }
+  if (protocol === 'https:') {
+    return globalThis.HostAccess.isLoopbackHostname(parsed.hostname)
+      || globalThis.HostAccess.isPrivateNetworkHostname(parsed.hostname);
+  }
+  return false;
 }
 
 function requireAllowedLocalModelUrl(baseUrl) {
   if (!isAllowedLocalModelUrl(baseUrl)) {
     throw new Error(
-      'Local model address must use http://localhost or http://127.0.0.1. Network hosts are not allowed.'
+      'Local model address must be a server on this computer or your local network. '
+      + globalThis.HostAccess.ALLOWED_HTTP_HOSTS_HINT
     );
   }
+}
+
+/**
+ * Loopback origins are permitted by the manifest. A server elsewhere on the
+ * network needs the origin permission that "Test connection" in Options asks
+ * for, because a service worker has no user gesture to request one with.
+ */
+async function requireLocalModelHostPermission(baseUrl) {
+  let parsed;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return; // requireAllowedLocalModelUrl already reported the bad address.
+  }
+  if (globalThis.HostAccess.isStaticallyAllowedUrl(parsed)) return;
+
+  const originPattern = globalThis.HostAccess.originPattern(parsed);
+  if (await hasOriginPermission(originPattern)) return;
+
+  throw new Error(
+    `Host permission missing for ${originPattern}. Open Options and click "Test connection" `
+    + 'for the local model server to grant access to that host.'
+  );
 }
 
 /** Turn a fetch failure against a local server into an actionable message. */
@@ -3120,13 +3157,19 @@ function localServerError(error, baseUrl) {
   if (error instanceof TypeError) {
     if (!isAllowedLocalModelUrl(baseUrl)) {
       return new Error(
-        `Could not reach ${baseUrl}. This extension only has permission for localhost and 127.0.0.1, so a model server on ` +
-        `another host or network address will be blocked.`
+        `Could not reach ${baseUrl}. The local model provider only talks to this computer or your local network, `
+        + 'so a server at that address is blocked.'
+      );
+    }
+    if (globalThis.HostAccess.isStaticallyAllowedUrl(new URL(baseUrl))) {
+      return new Error(
+        `Could not reach the local model server at ${baseUrl}. Check that it is running, and that it allows requests from extensions ` +
+        `(for Ollama, start it with OLLAMA_ORIGINS="chrome-extension://*").`
       );
     }
     return new Error(
-      `Could not reach the local model server at ${baseUrl}. Check that it is running, and that it allows requests from extensions ` +
-      `(for Ollama, start it with OLLAMA_ORIGINS="chrome-extension://*").`
+      `Could not reach the local model server at ${baseUrl}. Check that the machine is online and the server is running, `
+      + 'and that host access is still granted in Options. For Ollama, start it with OLLAMA_ORIGINS="chrome-extension://*".'
     );
   }
   return error;
@@ -3136,6 +3179,7 @@ function localServerError(error, baseUrl) {
 async function listLocalModels(rawBaseUrl) {
   const baseUrl = normalizeLocalBaseUrl(rawBaseUrl);
   requireAllowedLocalModelUrl(baseUrl);
+  await requireLocalModelHostPermission(baseUrl);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
@@ -3174,6 +3218,7 @@ function openAiCompatibleContentText(value) {
 async function callLocalModel(rawBaseUrl, model, tabs, customInstructions, existingGroups = null, minGroupSize = 1) {
   const baseUrl = normalizeLocalBaseUrl(rawBaseUrl);
   requireAllowedLocalModelUrl(baseUrl);
+  await requireLocalModelHostPermission(baseUrl);
   const basePrompt = buildOrganizePrompt(tabs, customInstructions, existingGroups, minGroupSize);
   const retryReminder = '\n\nYour previous reply was not valid JSON. Reply with ONLY the JSON array: start with [ and end with ]. No explanation, no markdown code fences.';
 
@@ -3648,6 +3693,21 @@ function providerHasKey(provider, settings) {
   return false;
 }
 
+/**
+ * Host access status for the local model server. Loopback is always ready; a
+ * server elsewhere on the network needs the permission "Test connection" grants.
+ * An address that is neither stays 'ready' so the failure is reported when the
+ * provider runs, where the message can name the address.
+ */
+async function localModelHostAccessStatus(rawBaseUrl) {
+  const baseUrl = normalizeLocalBaseUrl(rawBaseUrl);
+  if (!isAllowedLocalModelUrl(baseUrl)) return 'ready';
+  const parsed = new URL(baseUrl);
+  if (globalThis.HostAccess.isStaticallyAllowedUrl(parsed)) return 'ready';
+  const granted = await hasOriginPermission(globalThis.HostAccess.originPattern(parsed));
+  return granted ? 'ready' : 'missing-host-permission';
+}
+
 async function providerConfigurationStatus(provider, settings) {
   if (provider === 'chrome-ai') return 'ready'; // Availability is checked when the provider runs.
   if (provider === 'custom-openai') {
@@ -3657,7 +3717,8 @@ async function providerConfigurationStatus(provider, settings) {
     return hostStatus.status;
   }
   if (provider === 'local') {
-    return settings.localModel?.trim() ? 'ready' : 'no-model-name';
+    if (!settings.localModel?.trim()) return 'no-model-name';
+    return await localModelHostAccessStatus(settings.localBaseUrl);
   }
   return providerHasKey(provider, settings) ? 'ready' : 'no-key';
 }
@@ -3671,6 +3732,9 @@ function providerStatusFixMessage(provider, status) {
     if (status === 'missing-host-permission') return 'Open Options and click "Fetch models" for this host to grant access.';
   }
   if (provider === 'local') {
+    if (status === 'missing-host-permission') {
+      return 'Open Options and click "Test connection" for the local model server to grant access to that host.';
+    }
     return 'Set a model name in Smart Tab Organiser settings (for example, "llama3.1:8b").';
   }
   return 'Add an API key in Smart Tab Organiser settings, or configure another provider as fallback.';
