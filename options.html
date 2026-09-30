@@ -399,6 +399,17 @@
           </div>
           <textarea id="customInstructionsOptions" class="custom-instructions-textarea" placeholder="e.g., 'group by domain' or 'group by topic'" rows="3"></textarea>
         </div>
+
+        <div class="setting-item setting-item--stacked">
+          <div class="setting-info">
+            <label class="setting-label" for="excludedDomains">Never organize these domains</label>
+            <p class="setting-description">
+              One domain per line. Matching tabs are never sent to AI and are never grouped, ungrouped, or moved by organization.
+              <br><code>youtube.com</code> also matches subdomains such as <code>music.youtube.com</code>. Full URLs and a leading <code>*.</code> are accepted; lines starting with <code>#</code> are ignored.
+            </p>
+          </div>
+          <textarea id="excludedDomains" class="custom-instructions-textarea" placeholder="youtube.com&#10;mail.google.com" rows="3" spellcheck="false"></textarea>
+        </div>
         
         <div class="setting-item">
           <div class="setting-info">
@@ -407,6 +418,9 @@
               When enabled, tabs that are already in groups will be skipped during organization.
               <br>When disabled, all tabs will be reorganized into new groups.
               <br><strong>Pinned tabs and groups named "BOOKMARKS" and "PRs" are always preserved</strong>, regardless of this setting.
+            </p>
+            <p id="preserveGroupsRefineNote" class="setting-warning" style="display: none;">
+              Turned off because "Refine existing groups" is on. Refine keeps your groups and adds tabs to them.
             </p>
           </div>
           <label class="switch">
@@ -438,9 +452,26 @@
               <br>This works best when "Preserve existing groups" is also enabled. The AI will analyze existing groups and merge new tabs into them.
               <br><strong>Pinned tabs and the "BOOKMARKS" group are always preserved</strong>; these options apply to other groups only.
             </p>
+            <p id="mergeIntoExistingRefineNote" class="setting-warning" style="display: none;">
+              Turned off because "Refine existing groups" is on. Refine keeps your groups and adds tabs to them.
+            </p>
           </div>
           <label class="switch">
             <input type="checkbox" id="mergeIntoExisting">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="refineExistingGroups">Refine existing groups</label>
+            <p class="setting-description">
+              Keep your groups, but move tabs that clearly don't belong to a better group. Groups are never renamed; only emptied groups disappear.
+              <br>When enabled, tabs in your groups and your group names are sent to AI, and "Preserve existing groups" and "Merge tabs into existing groups" are ignored. The minimum group size still applies to new groups.
+            </p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="refineExistingGroups">
             <span class="slider"></span>
           </label>
         </div>

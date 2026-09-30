@@ -6,6 +6,8 @@
 
 - Added a toolbar-click setting for GitHub label-group sync.
 - Added Chrome colour selectors for each configured GitHub label and the PRs group.
+- Added a **Never organize these domains** setting. AI organization does not send matching tabs to a provider and does not move them.
+- Added an opt-in **Refine existing groups** mode. It keeps user groups, moves only tabs that the AI places in another group, and never renames groups.
 
 ### Changed
 

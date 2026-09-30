@@ -32,6 +32,7 @@ The extension stores these values in `chrome.storage.local`:
 - Tab-group settings
 - AI provider and model settings
 - Custom AI instructions
+- Domains that AI organization must skip
 - Optional API keys and a GitHub token
 
 Chrome stores this data in storage that belongs to the extension. The extension does not synchronize this data through `chrome.storage.sync`.
@@ -62,6 +63,9 @@ The request can include:
 - Tab URLs without query parameters or fragments
 - Custom AI instructions
 - Relevant existing group names and sample tab titles
+- In **Refine existing groups** mode, the current group name of each listed tab
+
+The extension does not send tabs on domains listed in **Never organize these domains**, pinned tabs, or tabs in groups that the extension manages.
 
 The URL path can still contain personal or sensitive information. The extension does not send page bodies, cookies, or form values.
 
