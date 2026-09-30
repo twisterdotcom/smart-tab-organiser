@@ -3504,6 +3504,28 @@ function mergeGroupBatches(batches) {
 }
 
 /**
+ * Parse a Chrome AI batch response. With `responseConstraint`, Gemini Nano can return an
+ * empty array or groups without usable indices; the shared parser rejects the whole
+ * response in those cases, so keep the valid groups and drop only the empty ones.
+ */
+function parseChromeAiGroupsResponse(content) {
+  const text = (content || '').trim();
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (_) {
+    return parseAiGroupsResponse(text);
+  }
+  if (!Array.isArray(parsed)) return parseAiGroupsResponse(text);
+  if (!parsed.every(group => group && typeof group === 'object' && typeof group.groupName === 'string')) {
+    return null;
+  }
+  return parsed
+    .map(group => ({ groupName: group.groupName, tabIndices: normalizeTabIndices(group.tabIndices) }))
+    .filter(group => group.groupName.trim() && group.tabIndices.length > 0);
+}
+
+/**
  * Categorize tabs with Chrome's on-device model. Nothing leaves the machine.
  * Tabs are batched to fit the small context window; batch results are merged by group name.
  */
@@ -3529,7 +3551,7 @@ async function callChromeAI(tabs, customInstructions, existingGroups = null, min
       session.destroy();
     }
 
-    const groups = parseAiGroupsResponse((content || '').trim());
+    const groups = parseChromeAiGroupsResponse(content);
     if (!groups) {
       console.warn('[Smart Tab Organiser] Chrome AI: invalid format. Content preview:', (content || '').slice(0, 200));
       throw new Error('Invalid response format from Chrome built-in AI');

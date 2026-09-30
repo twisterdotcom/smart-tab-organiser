@@ -1512,3 +1512,61 @@ test('a deadline during another organization is retried when that run finishes',
   await world.fireTimers();
   assert.deepEqual(world.state.runs, [1]);
 });
+
+function withChromeAiResponses(context, responses) {
+  const prompts = [];
+  context.LanguageModel = {
+    availability: async () => 'available',
+    create: async () => ({
+      prompt: async (prompt, options) => {
+        prompts.push({ prompt, options });
+        return responses[prompts.length - 1];
+      },
+      destroy() {},
+    }),
+  };
+  return prompts;
+}
+
+test('Chrome AI keeps valid groups when a constrained response has empty groups', async () => {
+  const { context } = loadBackground();
+  const prompts = withChromeAiResponses(context, [
+    '[{"groupName":"Docs","tabIndices":[1,2]},{"groupName":"Nothing","tabIndices":[]}]',
+  ]);
+  const tabs = [
+    { title: 'Docs one', url: 'https://example.com/one' },
+    { title: 'Docs two', url: 'https://example.com/two' },
+  ];
+
+  const groups = await context.callChromeAI(tabs, '', null, 1);
+
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].options.responseConstraint.type, 'array');
+  assert.deepEqual(JSON.parse(JSON.stringify(groups)), [{ groupName: 'Docs', tabIndices: [1, 2] }]);
+});
+
+test('Chrome AI tolerates an empty batch and shifts later batch indices', async () => {
+  const { context } = loadBackground();
+  const batchSize = vm.runInContext('CHROME_AI_TABS_PER_BATCH', context);
+  const tabs = Array.from({ length: batchSize + 2 }, (_, i) => ({
+    title: `Tab ${i + 1}`,
+    url: `https://example.com/${i + 1}`,
+  }));
+  withChromeAiResponses(context, ['[]', '[{"groupName":"Tail","tabIndices":[1,"2"]}]']);
+
+  const groups = await context.callChromeAI(tabs, '', null, 1);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(groups)),
+    [{ groupName: 'Tail', tabIndices: [batchSize + 1, batchSize + 2] }]
+  );
+});
+
+test('Chrome AI still rejects responses that are not tab groups', async () => {
+  const { context } = loadBackground();
+  withChromeAiResponses(context, ['{"message":"sorry"}']);
+  await assert.rejects(
+    context.callChromeAI([{ title: 'A', url: 'https://example.com/' }], '', null, 1),
+    /Invalid response format from Chrome built-in AI/
+  );
+});
