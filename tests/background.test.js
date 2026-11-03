@@ -2751,6 +2751,7 @@ test('organizeTabs rejects Chrome AI groups without a tabIndices array', async (
     '[{"groupName":"Broken"}]',
     '[{"groupName":"Broken","tabIndices":null}]',
     '[{"groupName":"Broken","tabIndices":"1,2"}]',
+    '[{"groupName":"   ","tabIndices":[1,2]}]',
   ];
 
   for (const response of responses) {
@@ -2763,4 +2764,48 @@ test('organizeTabs rejects Chrome AI groups without a tabIndices array', async (
     assert.equal(result.failures.length, 1, response);
     assert.match(result.failures[0].detail, /Invalid response format from Chrome built-in AI/, response);
   }
+});
+
+test('excluded internationalized domains use the URL hostname canonical form', () => {
+  const { context } = loadBackground();
+  const domains = context.parseExcludedDomains('bücher.de\n*.bücher.de.');
+
+  assert.deepEqual(Array.from(domains), ['xn--bcher-kva.de']);
+  assert.equal(
+    context.isExcludedTab({url: 'https://www.xn--bcher-kva.de/books'}, domains),
+    true
+  );
+  assert.equal(
+    context.isExcludedTab({url: 'https://xn--bcher-kva.de.evil.example/'}, domains),
+    false
+  );
+});
+
+test('refine mode recreates an emptied destination group during cyclic moves', async () => {
+  const world = setupOrganizeWorld({
+    settings: {refineExistingGroups: true, preserveGroupsMinTabs: 0},
+    tabs: [
+      makeTab(1, 10, 'Home tab', 'https://home.example.com/'),
+      makeTab(2, 20, 'Work tab', 'https://work.example.com/'),
+    ],
+    groups: [
+      {id: 10, title: 'Work', color: 'blue'},
+      {id: 20, title: 'Home', color: 'green'},
+    ],
+  });
+  world.respondWith([
+    {groupName: 'Home', tabIndices: [1]},
+    {groupName: 'Work', tabIndices: [2]},
+  ]);
+
+  const result = await world.context.organizeTabs(false, false, '', 0, 1, []);
+
+  assert.equal(result.success, true);
+  const homeGroupId = world.tabs.find(tab => tab.id === 1).groupId;
+  const workGroupId = world.tabs.find(tab => tab.id === 2).groupId;
+  assert.notEqual(homeGroupId, workGroupId);
+  assert.equal(world.groups.find(group => group.id === homeGroupId)?.title, 'Home');
+  const recreatedWork = world.groups.find(group => group.id === workGroupId);
+  assert.equal(recreatedWork?.title, 'Work');
+  assert.equal(recreatedWork?.color, 'blue');
 });

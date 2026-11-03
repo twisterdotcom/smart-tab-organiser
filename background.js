@@ -1358,6 +1358,17 @@ function normalizeExcludedHostname(hostname) {
   return String(hostname || '').trim().toLowerCase().replace(/\.+$/, '');
 }
 
+/** Convert Unicode hostnames to the same punycode form used by URL.hostname. */
+function canonicalizeExcludedHostname(hostname) {
+  const normalized = normalizeExcludedHostname(hostname);
+  if (!normalized) return '';
+  try {
+    return normalizeExcludedHostname(new URL(`http://${normalized}`).hostname);
+  } catch (_) {
+    return normalized;
+  }
+}
+
 /**
  * Parse the "Never organize these domains" setting. One domain per line; blank lines and
  * `#` comments are ignored; full URLs and a leading `*.` are accepted.
@@ -1377,7 +1388,7 @@ function parseExcludedDomains(value) {
     } else {
       line = line.split(/[/?#:]/)[0];
     }
-    line = normalizeExcludedHostname(line.replace(/^\*\./, '').replace(/^\.+/, ''));
+    line = canonicalizeExcludedHostname(line.replace(/^\*\./, '').replace(/^\.+/, ''));
     if (line && /^[a-z0-9.-]+$/.test(line)) domains.add(line);
   }
   return Array.from(domains);
@@ -1388,7 +1399,7 @@ function urlMatchesExcludedDomain(rawUrl, excludedDomains) {
   if (!rawUrl) return false;
   let hostname;
   try {
-    hostname = normalizeExcludedHostname(new URL(rawUrl).hostname);
+    hostname = canonicalizeExcludedHostname(new URL(rawUrl).hostname);
   } catch (_) {
     return false;
   }
@@ -3798,6 +3809,7 @@ function parseChromeAiGroupsResponse(content) {
     group &&
     typeof group === 'object' &&
     typeof group.groupName === 'string' &&
+    group.groupName.trim() &&
     Array.isArray(group.tabIndices)
   )) {
     return null;
@@ -4137,7 +4149,7 @@ async function computeProviderStatuses(providerChain, settings) {
  * tabs the model omitted are left alone. Existing groups are reused by exact title and
  * never renamed; only new groups must exceed the minimum size, otherwise tabs go to Misc.
  */
-async function applyRefinedGroups({ groups, tabsForAI, snapshots, windowId, groupTitleById, minTabs, excludedDomains = null }) {
+async function applyRefinedGroups({ groups, tabsForAI, snapshots, windowId, groupTitleById, groupDetailsById, minTabs, excludedDomains = null }) {
   const targetByTabId = new Map();
   const targetNames = new Map();
   for (const group of groups) {
@@ -4153,9 +4165,13 @@ async function applyRefinedGroups({ groups, tabsForAI, snapshots, windowId, grou
   }
 
   const existingGroupIdByName = new Map();
+  const existingGroupDetailsByName = new Map();
   for (const [id, title] of groupTitleById) {
     const key = title.toLowerCase();
-    if (title && !existingGroupIdByName.has(key)) existingGroupIdByName.set(key, id);
+    if (title && !existingGroupIdByName.has(key)) {
+      existingGroupIdByName.set(key, id);
+      existingGroupDetailsByName.set(key, groupDetailsById?.get(id) || {title, color: 'grey'});
+    }
   }
 
   const movesByTarget = new Map();
@@ -4197,7 +4213,31 @@ async function applyRefinedGroups({ groups, tabsForAI, snapshots, windowId, grou
     // Re-check: a tab can still navigate or change group while the earlier moves run.
     const liveTabIds = await filterUnchangedTabIds(tabIds, snapshots, windowId, excludedDomains);
     if (liveTabIds.length === 0) continue;
-    const existingGroupId = existingGroupIdByName.get(target);
+    let existingGroupId = existingGroupIdByName.get(target);
+    // Moving the last tab out of a group can make Chrome delete that group. Resolve the
+    // destination against live groups so cyclic moves do not use a stale cached ID.
+    if (existingGroupId !== undefined) {
+      const liveGroups = await chrome.tabGroups.query({ windowId });
+      const liveGroup = liveGroups.find(group => (group.title || '').trim().toLowerCase() === target);
+      if (liveGroup) {
+        existingGroupId = liveGroup.id;
+        existingGroupIdByName.set(target, liveGroup.id);
+      } else {
+        // Recreate an emptied original group with its original title and colour.
+        const details = existingGroupDetailsByName.get(target) || {title: target, color: 'grey'};
+        const recreatedId = await chrome.tabs.group({
+          tabIds: liveTabIds,
+          createProperties: {windowId}
+        });
+        await chrome.tabGroups.update(recreatedId, {
+          title: details.title,
+          color: details.color || 'grey'
+        });
+        existingGroupIdByName.set(target, recreatedId);
+        movedCount += liveTabIds.length;
+        continue;
+      }
+    }
     // A tab can drop out between the two checks, so reapply the new-group threshold here.
     if (existingGroupId === undefined && target !== 'misc' && liveTabIds.length <= threshold) {
       if (!movesByTarget.has('misc')) movesByTarget.set('misc', []);
@@ -4384,6 +4424,10 @@ async function organizeTabs(
 
     const userGroups = allGroups.filter(group => !alwaysPreservedGroupIds.has(group.id));
     const groupTitleById = new Map(userGroups.map(group => [group.id, (group.title || '').trim()]));
+    const groupDetailsById = new Map(userGroups.map(group => [group.id, {
+      title: (group.title || '').trim(),
+      color: group.color,
+    }]));
 
     // Re-query after ungrouping so tab.groupId is up to date (with URLs for suspended tabs)
     const validTabsAfterUngroup = await getOrganizableTabs(windowId);
@@ -4500,6 +4544,7 @@ async function organizeTabs(
         snapshots: tabsForAISnapshots,
         windowId: validTabs[0].windowId,
         groupTitleById,
+        groupDetailsById,
         minTabs,
         excludedDomains,
       });
