@@ -6,6 +6,8 @@
 
 - Added a toolbar-click setting for GitHub label-group sync.
 - Added Chrome colour selectors for each configured GitHub label and the PRs group.
+- Added a **Never organize these domains** setting. AI organization does not send matching tabs to a provider and does not move them.
+- Added an opt-in **Refine existing groups** mode. It keeps user groups, moves only tabs that the AI places in another group, and never renames groups.
 
 ### Changed
 
@@ -15,7 +17,11 @@
 
 ### Fixed
 
-- Chrome built-in AI no longer fails with "unexpected response" when Gemini Nano returns an empty batch or a group without tab numbers. The extension drops only the empty groups, and tabs from a response with no groups go to Misc.
+- Merge mode no longer sends excluded tabs to AI as sample titles from a preserved group.
+- Refine mode reuses existing groups whose names exceed 20 characters; the limit now applies only to new group names.
+- Refine mode applies the minimum new-group size to the tabs that actually move, after stale tabs are dropped.
+- A hostname with a trailing dot, such as `youtube.com.`, now matches its configured excluded domain.
+- **Sort tabs within groups by title** no longer reorders a group that contains an excluded tab.
 
 ## 1.3.1 — August 20, 2026
 
