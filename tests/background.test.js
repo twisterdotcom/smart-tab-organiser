@@ -11,15 +11,22 @@ const BACKGROUND_SOURCE = fs.readFileSync(
   'utf8'
 );
 
+const HOST_ACCESS_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'host-access.js'),
+  'utf8'
+);
+
 function eventStub() {
   const listeners = [];
   return {
+    listeners,
     addListener(listener) {
       listeners.push(listener);
     },
     async emit(...args) {
       for (const listener of listeners) await listener(...args);
     },
+    listeners,
   };
 }
 
@@ -136,6 +143,8 @@ function loadBackground() {
   context.self = context;
 
   vm.createContext(context);
+  // importScripts is stubbed above, so load the shared policy the worker needs.
+  vm.runInContext(HOST_ACCESS_SOURCE, context, { filename: 'host-access.js' });
   vm.runInContext(BACKGROUND_SOURCE, context, { filename: 'background.js' });
   return { chrome, context };
 }
@@ -262,13 +271,201 @@ test('SSE parsing supports multiline data fields and standalone CR endings', asy
   assert.equal(events[0].value, 1);
 });
 
-test('local model requests reject non-loopback hosts before fetch', async () => {
+test('local model requests reject public hosts before fetch', async () => {
   const { context } = loadBackground();
 
   await assert.rejects(
-    context.listLocalModels('http://192.168.1.20:11434/v1'),
-    /must use http:\/\/localhost or http:\/\/127\.0\.0\.1/
+    context.listLocalModels('http://models.example.com:11434/v1'),
+    /must be a server on this computer or your local network/
   );
+  await assert.rejects(
+    context.listLocalModels('http://8.8.8.8:11434/v1'),
+    /must be a server on this computer or your local network/
+  );
+});
+
+test('local model requests reach a private-network host once host access is granted', async () => {
+  const { chrome, context } = loadBackground();
+  const requested = [];
+  chrome.permissions.contains = async ({ origins }) => origins[0] === 'http://192.168.1.20:11434/*';
+  chrome.permissions.request = async ({ origins }) => {
+    requested.push(origins[0]);
+    return true;
+  };
+  context.fetch = async (url) => {
+    assert.equal(url, 'http://192.168.1.20:11434/v1/models');
+    return { ok: true, json: async () => ({ data: [{ id: 'llama3.1:8b' }] }) };
+  };
+
+  const result = await context.listLocalModels('192.168.1.20:11434');
+
+  assert.deepEqual(Array.from(result.models), ['llama3.1:8b']);
+  assert.deepEqual(requested, []);
+});
+
+test('local model requests name the host whose permission is missing', async () => {
+  const { chrome, context } = loadBackground();
+  const requested = [];
+  chrome.permissions.contains = async () => false;
+  chrome.permissions.request = async ({ origins }) => {
+    requested.push(origins[0]);
+    return true;
+  };
+  context.fetch = async () => {
+    throw new Error('Unexpected fetch');
+  };
+
+  await assert.rejects(
+    context.listLocalModels('http://192.168.1.20:11434/v1'),
+    /Host permission missing for http:\/\/192\.168\.1\.20:11434\/\*.*"Test connection"/s
+  );
+  // Background requests are check-only; the grant needs a user gesture.
+  assert.deepEqual(requested, []);
+});
+
+test('a user gesture can grant a private-network local model host without opening Options', async () => {
+  const { chrome, context } = loadBackground();
+  const requested = [];
+  chrome.permissions.contains = async () => false;
+  chrome.permissions.request = async ({ origins }) => {
+    requested.push(origins[0]);
+    return true;
+  };
+
+  await context.requireLocalModelHostPermission('http://192.168.1.20:11434/v1', true);
+
+  assert.deepEqual(requested, ['http://192.168.1.20:11434/*']);
+});
+
+test('a denied user-gesture request reports the missing grant without throwing', async () => {
+  const { chrome, context } = loadBackground();
+  chrome.permissions.contains = async () => false;
+  chrome.permissions.request = async () => false;
+
+  const granted = await context.grantLocalModelHostPermissionForUserGesture({
+    aiProvider: 'local',
+    localBaseUrl: 'http://192.168.1.20:11434',
+    localModel: 'llama3.1:8b',
+  });
+
+  assert.equal(granted, false);
+});
+
+test('the gesture grant covers a Chrome AI primary with a local fallback', async () => {
+  const { chrome, context } = loadBackground();
+  const requested = [];
+  chrome.permissions.contains = async () => false;
+  chrome.permissions.request = async ({ origins }) => {
+    requested.push(origins[0]);
+    return true;
+  };
+
+  const granted = await context.grantLocalModelHostPermissionForUserGesture({
+    aiProvider: 'chrome-ai',
+    aiFallbackEnabled: true,
+    localBaseUrl: 'http://192.168.1.20:11434',
+    localModel: 'llama3.1:8b',
+  });
+
+  assert.equal(granted, true);
+  assert.deepEqual(requested, ['http://192.168.1.20:11434/*']);
+});
+
+test('a gesture grant asks for nothing when the local server cannot join the chain', async () => {
+  const { chrome, context } = loadBackground();
+  const requested = [];
+  chrome.permissions.contains = async () => false;
+  chrome.permissions.request = async ({ origins }) => {
+    requested.push(origins[0]);
+    return true;
+  };
+
+  for (const settings of [
+    // Cloud primary: local providers never follow a cloud primary.
+    { aiProvider: 'openai', localBaseUrl: 'http://192.168.1.20:11434', localModel: 'llama3.1:8b' },
+    // Local fallback with no model name cannot run.
+    { aiProvider: 'chrome-ai', aiFallbackEnabled: true, localBaseUrl: 'http://192.168.1.20:11434' },
+    // A local primary with no model name cannot run either, so do not prompt.
+    { aiProvider: 'local', localBaseUrl: 'http://192.168.1.20:11434' },
+    // Loopback is already permitted by the manifest.
+    { aiProvider: 'local', localBaseUrl: 'http://localhost:11434', localModel: 'llama3.1:8b' },
+  ]) {
+    await context.grantLocalModelHostPermissionForUserGesture(settings);
+  }
+  assert.deepEqual(requested, []);
+});
+
+test('automatic organization keeps local host access check-only', async () => {
+  const { chrome, context } = loadBackground();
+  const requested = [];
+  chrome.permissions.contains = async () => false;
+  chrome.permissions.request = async ({ origins }) => {
+    requested.push(origins[0]);
+    return true;
+  };
+  chrome.storage.local.get = async () => ({
+    aiProvider: 'local',
+    aiFallbackEnabled: false,
+    localBaseUrl: 'http://192.168.1.20:11434',
+    localModel: 'llama3.1:8b',
+  });
+
+  const result = await context.organizeTabs(false, false, '', 1, 1, []);
+
+  assert.equal(result.success, false);
+  assert.match(result.error, /Local model server is not configured|Loopback model server is not configured/);
+  assert.match(result.error, /Test connection/);
+  assert.deepEqual(requested, []);
+});
+
+test('a toolbar click grants the LAN origin before organizing', async () => {
+  const { chrome } = loadBackground();
+  const requested = [];
+  const order = [];
+  chrome.storage.local.get = async () => ({
+    organizeOnClick: true,
+    aiProvider: 'local',
+    aiFallbackEnabled: false,
+    localBaseUrl: 'http://192.168.1.20:11434',
+    localModel: 'llama3.1:8b',
+  });
+  chrome.permissions.contains = async () => false;
+  chrome.permissions.request = async ({ origins }) => {
+    requested.push(origins[0]);
+    order.push('permission');
+    return true;
+  };
+  chrome.tabs.query = async () => {
+    order.push('tabs');
+    return [];
+  };
+
+  // Let the badge refresh at worker startup settle, then watch the click itself.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  order.length = 0;
+  await chrome.action.onClicked.emit({ windowId: 1 });
+
+  assert.deepEqual(requested, ['http://192.168.1.20:11434/*']);
+  // The prompt must own the click, not follow the tab work.
+  assert.equal(order[0], 'permission');
+});
+
+test('local model requests keep loopback working without any host permission', async () => {
+  const { chrome, context } = loadBackground();
+  let permissionChecks = 0;
+  chrome.permissions.contains = async () => {
+    permissionChecks += 1;
+    return false;
+  };
+  context.fetch = async (url) => {
+    assert.equal(url, 'http://localhost:11434/v1/models');
+    return { ok: true, json: async () => ({ data: [{ id: 'llama3.1:8b' }] }) };
+  };
+
+  const result = await context.listLocalModels('');
+
+  assert.deepEqual(Array.from(result.models), ['llama3.1:8b']);
+  assert.equal(permissionChecks, 0);
 });
 
 test('provider fallback is disabled until the user enables it', async () => {
@@ -290,13 +487,56 @@ test('Chrome built-in AI remains configured without an API key', async () => {
   assert.equal(await context.providerConfigurationStatus('chrome-ai', {}), 'ready');
 });
 
-test('custom OpenAI optional host access is restricted to HTTPS', () => {
+test('custom OpenAI optional host access covers HTTPS everywhere and HTTP on request', () => {
   const manifest = JSON.parse(fs.readFileSync(
     path.join(__dirname, '..', 'manifest.json'),
     'utf8'
   ));
 
-  assert.deepEqual(manifest.optional_host_permissions, ['https://*/*']);
+  assert.deepEqual(manifest.optional_host_permissions, ['https://*/*', 'http://*/*']);
+  // Loopback is still granted up front rather than prompted for.
+  assert.ok(manifest.host_permissions.includes('http://localhost/*'));
+  assert.ok(manifest.host_permissions.includes('http://127.0.0.1/*'));
+});
+
+test('custom OpenAI host access rejects public HTTP but allows a private-network host', async () => {
+  const { chrome, context } = loadBackground();
+  const requested = [];
+  chrome.permissions.contains = async ({ origins }) => origins[0] === 'http://192.168.1.20:11434/*';
+  chrome.permissions.request = async ({ origins }) => {
+    requested.push(origins[0]);
+    return true;
+  };
+
+  await assert.rejects(
+    context.ensureCustomOpenAIHostPermission('http://models.example.com/v1'),
+    /must use HTTPS/
+  );
+  await assert.rejects(
+    context.ensureCustomOpenAIHostPermission('http://8.8.8.8/v1'),
+    /must use HTTPS/
+  );
+  assert.deepEqual(requested, []);
+
+  await context.ensureCustomOpenAIHostPermission('http://192.168.1.20:11434/v1');
+  assert.deepEqual(requested, []);
+
+  const ready = await context.customOpenAIHostAccessStatus('http://192.168.1.20:11434/v1');
+  assert.equal(ready.status, 'ready');
+  assert.equal(ready.originPattern, 'http://192.168.1.20:11434/*');
+
+  const ungranted = await context.customOpenAIHostAccessStatus('http://192.168.1.21:11434/v1');
+  assert.equal(ungranted.status, 'missing-host-permission');
+  assert.equal(ungranted.originPattern, 'http://192.168.1.21:11434/*');
+
+  // RFC 6598 can be routed by carriers, so it is not a trusted cleartext host.
+  const carrierRange = await context.customOpenAIHostAccessStatus('http://100.64.0.1:11434/v1');
+  assert.equal(carrierRange.status, 'insecure-http-url');
+  assert.equal(carrierRange.originPattern, undefined);
+
+  const publicHost = await context.customOpenAIHostAccessStatus('http://models.example.com/v1');
+  assert.equal(publicHost.status, 'insecure-http-url');
+  assert.equal(publicHost.originPattern, undefined);
 });
 
 test('custom OpenAI host normalization preserves explicit paths and defaults origin-only input to /v1', () => {
@@ -474,6 +714,23 @@ test('custom OpenAI chain status reports missing model separately from missing k
   assert.equal(customEntry.status, 'missing-model-name');
 });
 
+test('a granted LAN local fallback is reported ready', async () => {
+  const { chrome, context } = loadBackground();
+  chrome.permissions.contains = async ({ origins }) => origins[0] === 'http://192.168.1.20:11434/*';
+
+  const description = await context.describeProviderChain({
+    aiProvider: 'chrome-ai',
+    aiFallbackEnabled: true,
+    aiFallbackOrder: ['local'],
+    localBaseUrl: 'http://192.168.1.20:11434',
+    localModel: 'llama3.1:8b',
+  });
+
+  const localEntry = description.entries.find((entry) => entry.provider === 'local');
+  assert.equal(localEntry.status, 'ready');
+  assert.deepEqual(Array.from(description.chain), ['chrome-ai', 'local']);
+});
+
 test('custom OpenAI chain marks missing host permission as not ready', async () => {
   const { chrome, context } = loadBackground();
   chrome.permissions.contains = async () => false;
@@ -493,13 +750,78 @@ test('custom OpenAI chain marks missing host permission as not ready', async () 
   assert.deepEqual(Array.from(description.chain), ['openai', 'claude']);
 });
 
-test('organizeTabs requests custom host permission before any grouping mutation', async () => {
+test('local fallback without host permission is not shown as ready', async () => {
+  const { chrome, context } = loadBackground();
+  chrome.permissions.contains = async () => false;
+
+  const description = await context.describeProviderChain({
+    aiProvider: 'chrome-ai',
+    aiFallbackEnabled: true,
+    aiFallbackOrder: ['local', 'claude'],
+    localModel: 'llama3.1:8b',
+    localBaseUrl: 'http://192.168.1.20:11434/v1',
+    claudeKey: 'claude-key',
+  });
+
+  const localEntry = description.entries.find((entry) => entry.provider === 'local');
+  assert.equal(localEntry.status, 'missing-host-permission');
+  assert.deepEqual(Array.from(description.chain), ['chrome-ai']);
+});
+
+test('describeProviderChain message loads the local base URL for its status', async () => {
+  const { chrome } = loadBackground();
+  chrome.permissions.contains = async () => false;
+  chrome.storage.local.get = async (keys) => {
+    assert.ok(keys.includes('localBaseUrl'), 'handler must read localBaseUrl');
+    return {
+      aiProvider: 'chrome-ai',
+      aiFallbackEnabled: true,
+      aiFallbackOrder: ['local'],
+      localModel: 'llama3.1:8b',
+      localBaseUrl: 'http://192.168.1.20:11434/v1',
+    };
+  };
+
+  const listener = chrome.runtime.onMessage.listeners[0];
+  assert.ok(listener, 'background registers a message listener');
+
+  const response = await new Promise((resolve) => {
+    const async = listener({ action: 'describeProviderChain' }, {}, resolve);
+    assert.equal(async, true);
+  });
+
+  assert.equal(response.success, true);
+  const localEntry = response.entries.find((entry) => entry.provider === 'local');
+  assert.equal(localEntry.status, 'missing-host-permission');
+});
+
+test('a user gesture asks for the custom host before any tab work', async () => {
+  const { chrome, context } = loadBackground();
+  const requests = [];
+
+  chrome.permissions.contains = async () => false;
+  chrome.permissions.request = async ({ origins }) => {
+    requests.push(origins[0]);
+    return false;
+  };
+
+  await context.grantHostAccessForUserGesture({
+    aiProvider: 'custom-openai',
+    customOpenaiBaseUrl: 'https://api.example.com/v1',
+    customOpenaiModel: 'model-a',
+  });
+
+  assert.deepEqual(requests, ['https://api.example.com/*']);
+});
+
+test('organizeTabs never asks for host access itself', async () => {
   const { chrome, context } = loadBackground();
   const tabs = [
     { id: 1, index: 0, pinned: false, groupId: -1, windowId: 1, title: 'One', url: 'https://example.com/one' },
     { id: 2, index: 1, pinned: false, groupId: -1, windowId: 1, title: 'Two', url: 'https://example.com/two' },
   ];
-  const callOrder = [];
+  let requests = 0;
+  let ungrouped = 0;
 
   chrome.storage.local.get = async () => ({
     aiProvider: 'custom-openai',
@@ -508,13 +830,10 @@ test('organizeTabs requests custom host permission before any grouping mutation'
     customOpenaiModel: 'model-a',
     customOpenaiKey: 'key',
   });
-  chrome.permissions.contains = async () => {
-    callOrder.push('contains');
-    return false;
-  };
+  chrome.permissions.contains = async () => false;
   chrome.permissions.request = async () => {
-    callOrder.push('request');
-    return false;
+    requests += 1;
+    return true;
   };
   chrome.tabs.query = async (queryInfo = {}) => {
     if (Object.prototype.hasOwnProperty.call(queryInfo, 'groupId')) return [];
@@ -522,19 +841,112 @@ test('organizeTabs requests custom host permission before any grouping mutation'
   };
   chrome.tabGroups.query = async () => [];
   chrome.tabs.ungroup = async () => {
-    callOrder.push('ungroup');
+    ungrouped += 1;
   };
   context.fetch = async () => {
-    throw new Error('fetch should not run when permission is denied');
+    throw new Error('fetch should not run when permission is missing');
   };
 
   const result = await context.organizeTabs(false, false, '', 1, 1, []);
   assert.equal(result.success, false);
-  assert.match(result.error, /OpenAI Compatible API Host is not configured\./);
   assert.match(result.error, /Fetch models/);
-  assert.equal(callOrder.includes('ungroup'), false);
-  assert.equal(callOrder.includes('request'), true);
-  assert.equal(callOrder.at(-1), 'contains');
+  assert.equal(requests, 0, 'the organizer must not prompt after its gesture window');
+  assert.equal(ungrouped, 0, 'no tab may be touched before the provider check');
+});
+
+test('a disallowed local address stops before any tab mutation', async () => {
+  const { chrome, context } = loadBackground();
+  const tabs = [
+    { id: 1, index: 0, pinned: false, groupId: -1, windowId: 1, title: 'One', url: 'https://example.com/one' },
+    { id: 2, index: 1, pinned: false, groupId: -1, windowId: 1, title: 'Two', url: 'https://example.com/two' },
+    { id: 3, index: 2, pinned: false, groupId: -1, windowId: 1, title: 'Three', url: 'https://example.com/three' },
+  ];
+  let ungrouped = 0;
+
+  chrome.storage.local.get = async () => ({
+    aiProvider: 'local',
+    aiFallbackEnabled: false,
+    localModel: 'llama3.1:8b',
+    localBaseUrl: 'http://8.8.8.8:11434/v1',
+  });
+  chrome.permissions.contains = async () => true;
+  chrome.tabs.query = async (queryInfo = {}) => {
+    if (Object.prototype.hasOwnProperty.call(queryInfo, 'groupId')) return [];
+    return tabs.map((tab) => ({ ...tab }));
+  };
+  chrome.tabGroups.query = async () => [];
+  chrome.tabs.ungroup = async () => {
+    ungrouped += 1;
+  };
+  context.fetch = async () => {
+    throw new Error('fetch must not run for a blocked host');
+  };
+
+  const result = await context.organizeTabs(false, false, '', 1, 1, []);
+
+  assert.equal(result.success, false);
+  assert.match(result.error, /local network/);
+  assert.equal(ungrouped, 0, 'a blocked address must not mutate tabs');
+});
+
+test('local chain reports a disallowed address instead of ready', async () => {
+  const { context } = loadBackground();
+
+  const description = await context.describeProviderChain({
+    aiProvider: 'local',
+    aiFallbackEnabled: false,
+    localModel: 'llama3.1:8b',
+    localBaseUrl: 'http://8.8.8.8:11434/v1',
+  });
+
+  const entry = description.entries.find((item) => item.provider === 'local');
+  assert.equal(entry.status, 'primary');
+  assert.equal(
+    await context.providerConfigurationStatus('local', {
+      localModel: 'llama3.1:8b',
+      localBaseUrl: 'http://8.8.8.8:11434/v1',
+    }),
+    'blocked-host'
+  );
+});
+
+test('auto organization keeps a blocked local address out of the usable chain', async () => {
+  const { context } = loadBackground();
+
+  const description = await context.describeProviderChain({
+    aiProvider: 'chrome-ai',
+    aiFallbackEnabled: true,
+    aiFallbackOrder: ['local'],
+    localModel: 'llama3.1:8b',
+    localBaseUrl: 'http://8.8.8.8:11434/v1',
+  });
+
+  const localEntry = description.entries.find((entry) => entry.provider === 'local');
+  assert.equal(localEntry.status, 'blocked-host');
+  assert.deepEqual(Array.from(description.chain), ['chrome-ai']);
+});
+
+test('automatic organization never prompts for host access', async () => {
+  const { chrome, context } = loadBackground();
+  let requests = 0;
+
+  chrome.storage.local.get = async () => ({
+    aiProvider: 'local',
+    aiFallbackEnabled: false,
+    localModel: 'llama3.1:8b',
+    localBaseUrl: 'http://192.168.1.20:11434/v1',
+  });
+  chrome.permissions.contains = async () => false;
+  chrome.permissions.request = async () => {
+    requests += 1;
+    return true;
+  };
+
+  const result = await context.organizeTabs(false, false, '', 1, 1, []);
+
+  assert.equal(requests, 0, 'no prompt without a user gesture');
+  assert.equal(result.success, false);
+  assert.match(result.error, /Test connection/);
 });
 
 test('custom OpenAI base URL keeps query values with trailing slashes', () => {

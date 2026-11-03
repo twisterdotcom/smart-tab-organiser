@@ -6,6 +6,8 @@
 
 - Added a toolbar-click setting for GitHub label-group sync.
 - Added Chrome colour selectors for each configured GitHub label and the PRs group.
+- Allowed plain HTTP to private-network hosts (`10.x`, `172.16`–`172.31.x`, `192.168.x`, `169.254.x`, IPv6 `fc00::/7` and `fe80::/10`) for both the local model server and a custom OpenAI-compatible host. Each such host still needs its own host access, requested once from Options or when organization starts from the toolbar.
+- A toolbar-started organization now requests the LAN origin of the local model server itself, so it no longer depends on Options having granted it first. Automatic organization stays check-only.
 - Added a **Never organize these domains** setting. AI organization does not send matching tabs to a provider and does not move them.
 - Added an opt-in **Refine existing groups** mode. It keeps user groups, moves only tabs that the AI places in another group, and never renames groups.
 
@@ -14,6 +16,13 @@
 - Configured settings now control label-group colours. GitHub label colours no longer control them.
 - Managed groups now appear after pinned tabs in this order: BOOKMARKS, PRs, configured labels, Closed.
 - Default label colours avoid the BOOKMARKS, PRs, and Closed colours until the available palette is full.
+- Renamed "Loopback model server" to "Local model server", which it now describes more accurately.
+- Added `http://*/*` as an optional host permission so a private-network host can be granted. Requests stay scoped to the single origin the user typed, and public `http://` hosts remain blocked.
+
+### Privacy and security
+
+- Documented that plain HTTP to a private-network host is unencrypted on the local network, unlike loopback traffic.
+- Stopped treating RFC 6598 Shared Address Space (`100.64.0.0/10`, used by Tailscale) as local. Carriers also route that range, so cleartext requests there can leave the user's network and expose tab data or a custom-host key. Such hosts now require HTTPS.
 
 ### Fixed
 

@@ -437,7 +437,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     claude: 'Claude',
     gemini: 'Gemini',
     'chrome-ai': 'Chrome built-in AI',
-    local: 'Loopback model server',
+    local: 'Local model server',
     'custom-openai': 'OpenAI Compatible API Host'
   };
   const LOCAL_PROVIDERS_OPTIONS = ['chrome-ai', 'local'];
@@ -457,35 +457,64 @@ document.addEventListener('DOMContentLoaded', async () => {
     return parsed;
   }
 
-  function isLoopbackHostnameOptions(hostname) {
-    const value = String(hostname || '').trim().toLowerCase();
-    const normalized = value.startsWith('[') && value.endsWith(']') ? value.slice(1, -1) : value;
-    return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
+  /** Ask Chrome for one origin, reporting a rejected match pattern as a normal error. */
+  async function requestOriginPermissionOptions(originPattern) {
+    let granted;
+    try {
+      granted = await chrome.permissions.request({ origins: [originPattern] });
+    } catch (error) {
+      throw new Error(`Chrome refused host access for ${originPattern}: ${error.message || error}`);
+    }
+    if (!granted) {
+      throw new Error(`Permission for ${originPattern} was not granted.`);
+    }
   }
 
-  function isStaticallyAllowedLoopbackUrlOptions(parsed) {
-    if (!isLoopbackHostnameOptions(parsed?.hostname)) return false;
-    if ((parsed?.protocol || '').toLowerCase() !== 'http:') return false;
-    const host = String(parsed?.hostname || '').toLowerCase();
-    return host === 'localhost' || host === '127.0.0.1';
+  /** Request one origin unless it is loopback, which the manifest already permits. */
+  async function requestOriginPermissionIfMissing(parsed) {
+    if (HostAccess.isStaticallyAllowedUrl(parsed)) return;
+    const originPattern = HostAccess.originPattern(parsed);
+    const hasPermission = await chrome.permissions.contains({ origins: [originPattern] });
+    if (hasPermission) return;
+    await requestOriginPermissionOptions(originPattern);
   }
 
   async function requestCustomHostPermissionIfNeeded(rawBaseUrl) {
     const parsed = normalizeCustomBaseUrlForPermission(rawBaseUrl);
     if (!parsed) throw new Error('Enter a valid OpenAI-compatible base URL.');
-    if (isStaticallyAllowedLoopbackUrlOptions(parsed)) return;
-    if (parsed.protocol !== 'https:') {
-      throw new Error('Remote OpenAI-compatible hosts must use HTTPS. Use HTTPS, or keep HTTP only for localhost/127.0.0.1.');
+    if (parsed.protocol !== 'https:' && !HostAccess.allowsPlainHttpUrl(parsed)) {
+      throw new Error(
+        'Remote OpenAI-compatible hosts must use HTTPS. ' + HostAccess.ALLOWED_HTTP_HOSTS_HINT
+      );
     }
+    await requestOriginPermissionIfMissing(parsed);
+  }
 
-    const originPattern = `${parsed.protocol}//${parsed.host}/*`;
-    const hasPermission = await chrome.permissions.contains({ origins: [originPattern] });
-    if (hasPermission) return;
-
-    const granted = await chrome.permissions.request({ origins: [originPattern] });
-    if (!granted) {
-      throw new Error(`Permission for ${originPattern} was not granted.`);
+  /**
+   * The local model provider only talks to this computer or the local network.
+   * Loopback needs no permission; a server on the LAN needs one, and this click
+   * is a user gesture, so the options page can ask for it. Organization from the
+   * toolbar asks for the same origin itself.
+   */
+  async function requestLocalHostPermissionIfNeeded(rawBaseUrl) {
+    let url = (rawBaseUrl || '').trim();
+    if (!url) return; // Empty means the default loopback server.
+    if (!/^https?:\/\//i.test(url)) {
+      url = `http://${url}`;
     }
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error('Enter a valid local model server address.');
+    }
+    if (!HostAccess.allowsLocalProviderUrl(parsed)) {
+      throw new Error(
+        'The local model provider only reaches this computer or your local network. '
+        + HostAccess.ALLOWED_HTTP_HOSTS_HINT
+      );
+    }
+    await requestOriginPermissionIfMissing(parsed);
   }
 
   // Row tags for each status describeProviderChain can report.
@@ -500,6 +529,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     'missing-host-permission': 'Needs host permission',
     'not-downloaded': 'Model not downloaded',
     'no-model-name': 'No model name',
+    'blocked-host': 'Unsupported address',
     'cloud-opt-in-off': 'Needs cloud fallback opt-in',
     'not-after-cloud': 'Not used after a cloud primary',
     disabled: ''
@@ -607,7 +637,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const statusByProvider = new Map(desc.entries.map((e) => [e.provider, e.status]));
     if (desc.localPrimary) {
       if (statusByProvider.get('local') === 'no-model-name') {
-        parts.push('Set a loopback model name to enable the local fallback.');
+        parts.push('Set a local model name to enable the local fallback.');
+      }
+      if (statusByProvider.get('local') === 'blocked-host') {
+        parts.push('The local model server must be on this computer or your local network.');
       }
       if (statusByProvider.get('chrome-ai') === 'not-downloaded') {
         parts.push('Chrome built-in AI joins the chain once its model is downloaded.');
@@ -630,7 +663,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else if (customStatus === 'invalid-base-url') {
         parts.push('Fix the OpenAI Compatible base URL so the extension can use it.');
       } else if (customStatus === 'insecure-http-url') {
-        parts.push('Remote OpenAI Compatible hosts must use HTTPS. HTTP is allowed only for localhost or 127.0.0.1.');
+        parts.push('Remote OpenAI Compatible hosts must use HTTPS. ' + HostAccess.ALLOWED_HTTP_HOSTS_HINT);
       } else if (customStatus === 'missing-host-permission') {
         parts.push('OpenAI Compatible host access is not granted yet. Click Fetch models for that host first.');
       } else {
@@ -692,6 +725,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   localBaseUrlInput.addEventListener('input', () => {
     chrome.storage.local.set({ localBaseUrl: localBaseUrlInput.value.trim() });
+    scheduleFallbackUiRefresh(); // the chain shows this host's access state
   });
 
   localModelInput.addEventListener('input', () => {
@@ -716,6 +750,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     localModelStatus.textContent = 'Connecting to local model server...';
     localModelStatus.className = 'status info';
     try {
+      await requestLocalHostPermissionIfNeeded(localBaseUrlInput.value.trim());
       const result = await chrome.runtime.sendMessage({
         action: 'listLocalModels',
         baseUrl: localBaseUrlInput.value.trim()
@@ -740,6 +775,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       localModelStatus.className = 'status error';
     } finally {
       testLocalModelBtn.disabled = false;
+      // A granted or revoked origin changes the fallback chain's status.
+      scheduleFallbackUiRefresh();
     }
   });
 
@@ -1126,6 +1163,23 @@ document.addEventListener('DOMContentLoaded', async () => {
       const preserveGroupsMinTabs = Number.isFinite(minTabsParsed) && minTabsParsed >= 0 ? minTabsParsed : 1;
       const mergeIntoExisting = mergeIntoExistingCheckbox.checked;
       const customInstructions = customInstructionsOptions.value.trim();
+
+      // This click owns the gesture, so grant every host the run may need before
+      // the service worker starts synchronization or tab work. Only providers
+      // that can actually run in this chain are asked, so no stray dialog.
+      const primaryProvider = aiProviderSelect.value || 'openai';
+      const fallbackOn = aiFallbackEnabledCheckbox.checked;
+      const localEligible = LOCAL_PROVIDERS_OPTIONS.includes(primaryProvider)
+        && !!localModelInput.value.trim()
+        && (primaryProvider === 'local' || fallbackOn);
+      const customEligible = !!customOpenaiBaseUrlInput.value.trim()
+        && !!customOpenaiModelInput.value.trim()
+        && (primaryProvider === 'custom-openai'
+          || (LOCAL_PROVIDERS_OPTIONS.includes(primaryProvider)
+            && fallbackOn
+            && aiAllowCloudFallbackCheckbox.checked));
+      if (localEligible) await requestLocalHostPermissionIfNeeded(localBaseUrlInput.value.trim());
+      if (customEligible) await requestCustomHostPermissionIfNeeded(customOpenaiBaseUrlInput.value.trim());
 
       const result = await chrome.runtime.sendMessage({
         action: 'organizeTabs',

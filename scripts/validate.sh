@@ -3,6 +3,7 @@ set -eu
 
 node --check background.js
 node --check ai-models.js
+node --check host-access.js
 node --check options.js
 node --test tests/*.test.js
 python3 scripts/validate-store-assets.py

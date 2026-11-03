@@ -19,6 +19,7 @@ PACKAGE_FILES = (
     "manifest.json",
     "background.js",
     "ai-models.js",
+    "host-access.js",
     "options.html",
     "options.css",
     "options.js",
@@ -160,7 +161,7 @@ def validate_remote_code() -> None:
     if re.search(r"@import\s+(?:url\()?\s*[\"']?https?://", css, re.IGNORECASE):
         fail("remote CSS import found in options.css")
 
-    for relative_path in ("background.js", "ai-models.js", "options.js"):
+    for relative_path in ("background.js", "ai-models.js", "host-access.js", "options.js"):
         text = (ROOT / relative_path).read_text(encoding="utf-8")
         for pattern in REMOTE_JAVASCRIPT_PATTERNS:
             if pattern.search(text):
