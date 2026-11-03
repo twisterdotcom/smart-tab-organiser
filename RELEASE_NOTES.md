@@ -13,6 +13,10 @@
 - Managed groups now appear after pinned tabs in this order: BOOKMARKS, PRs, configured labels, Closed.
 - Default label colours avoid the BOOKMARKS, PRs, and Closed colours until the available palette is full.
 
+### Fixed
+
+- Chrome built-in AI no longer fails with "unexpected response" when Gemini Nano returns an empty batch or a group without tab numbers. The extension drops only the empty groups, and tabs from a response with no groups go to Misc.
+
 ## 1.3.1 — August 20, 2026
 
 ### Changed
