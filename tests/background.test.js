@@ -1977,3 +1977,790 @@ test('a deadline during another organization is retried when that run finishes',
   await world.fireTimers();
   assert.deepEqual(world.state.runs, [1]);
 });
+
+function setupOrganizeWorld({ settings, tabs, groups }) {
+  const { chrome, context } = loadBackground();
+  const calls = { group: [], ungroup: [], update: [] };
+  let nextGroupId = 900;
+  chrome.storage.local.get = async () => ({
+    openaiKey: 'openai-key',
+    openaiModel: 'test-model',
+    aiProvider: 'openai',
+    aiFallbackEnabled: false,
+    sortTabsWithinGroupsByTitle: false,
+    ...settings,
+  });
+  chrome.tabs.query = async (query) => {
+    if (Number.isInteger(query.groupId)) {
+      return tabs.filter(tab => tab.groupId === query.groupId).map(tab => ({ ...tab }));
+    }
+    return tabs.map(tab => ({ ...tab }));
+  };
+  chrome.tabs.get = async (id) => {
+    const tab = tabs.find(candidate => candidate.id === id);
+    if (!tab) throw new Error(`No tab with id: ${id}`);
+    return { ...tab };
+  };
+  chrome.tabs.group = async ({ groupId, tabIds }) => {
+    const ids = Array.isArray(tabIds) ? tabIds : [tabIds];
+    calls.group.push({ groupId, tabIds: [...ids] });
+    let resolvedGroupId = groupId;
+    if (!Number.isInteger(resolvedGroupId)) {
+      resolvedGroupId = nextGroupId++;
+      groups.push({ id: resolvedGroupId, title: '', color: 'grey' });
+    }
+    for (const id of ids) tabs.find(tab => tab.id === id).groupId = resolvedGroupId;
+    return resolvedGroupId;
+  };
+  chrome.tabs.ungroup = async (ids) => {
+    calls.ungroup.push([...ids]);
+    for (const id of ids) tabs.find(tab => tab.id === id).groupId = -1;
+  };
+  chrome.tabGroups.query = async () => groups
+    .filter(group => tabs.some(tab => tab.groupId === group.id))
+    .map(group => ({ ...group }));
+  chrome.tabGroups.update = async (id, updates) => {
+    calls.update.push({ id, ...updates });
+    Object.assign(groups.find(group => group.id === id), updates);
+  };
+  const world = { chrome, context, calls, tabs, groups, prompt: '' };
+  world.respondWith = (aiGroups) => {
+    context.fetch = async (_url, init) => {
+      world.prompt = JSON.parse(init.body).messages[0].content;
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: JSON.stringify(aiGroups) } }] }),
+      };
+    };
+  };
+  return world;
+}
+
+function makeTab(id, groupId, title, url, extra = {}) {
+  return { id, windowId: 1, index: id, title, url, groupId, pinned: false, splitViewId: -1, ...extra };
+}
+
+test('excluded domains parse lines, URLs, wildcards, and comments without matching lookalikes', () => {
+  const { context } = loadBackground();
+  const domains = context.parseExcludedDomains(
+    'YouTube.com\n# comment\n\nhttps://mail.google.com/mail/u/0/\n*.ticktick.com  # tasks\nbad domain!'
+  );
+  assert.deepEqual(Array.from(domains), ['youtube.com', 'mail.google.com', 'ticktick.com']);
+  const excluded = (url) => context.isExcludedTab({ url }, domains);
+  assert.equal(excluded('https://www.youtube.com/watch?v=1'), true);
+  assert.equal(excluded('https://music.youtube.com/'), true);
+  assert.equal(excluded('https://youtube.com/'), true);
+  assert.equal(excluded('https://ticktick.com/webapp'), true);
+  assert.equal(excluded('https://notyoutube.com/'), false);
+  assert.equal(excluded('https://youtube.com.evil.example/'), false);
+  assert.equal(excluded('https://google.com/'), false);
+  assert.equal(context.isExcludedTab({ url: '', pendingUrl: 'https://m.youtube.com/' }, domains), true);
+});
+
+test('excluded-domain tabs stay in their group and are never sent to AI', async () => {
+  const world = setupOrganizeWorld({
+    settings: { preserveGroups: false, excludedDomains: 'youtube.com' },
+    tabs: [
+      makeTab(1, 50, 'Lofi mix', 'https://www.youtube.com/watch?v=abc'),
+      makeTab(2, 50, 'Docs one', 'https://example.com/docs/one'),
+      makeTab(3, -1, 'Docs two', 'https://example.com/docs/two'),
+    ],
+    groups: [{ id: 50, title: 'Random', color: 'blue' }],
+  });
+  world.respondWith([{ groupName: 'Docs', tabIndices: [1, 2] }]);
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1, []);
+
+  assert.equal(result.success, true);
+  assert.doesNotMatch(world.prompt, /youtube|Lofi mix/);
+  assert.equal(world.calls.ungroup.flat().includes(1), false);
+  assert.equal(world.calls.group.some(call => call.tabIds.includes(1)), false);
+  assert.equal(world.tabs.find(tab => tab.id === 1).groupId, 50);
+});
+
+test('refine mode moves only stray tabs and keeps small user groups', async () => {
+  const world = setupOrganizeWorld({
+    settings: { refineExistingGroups: true, preserveGroups: true, preserveGroupsMinTabs: 2, excludedDomains: 'youtube.com' },
+    tabs: [
+      makeTab(1, 10, 'Jira board', 'https://acme.atlassian.net/jira'),
+      makeTab(2, 10, 'AWS console', 'https://console.aws.amazon.com/'),
+      makeTab(3, 10, 'Home Assistant', 'https://ha.example.net/'),
+      makeTab(4, 20, 'Tailscale admin', 'https://login.tailscale.com/'),
+      makeTab(5, -1, 'Random article', 'https://news.example.com/a'),
+      makeTab(6, 10, 'Video', 'https://www.youtube.com/watch?v=1'),
+      makeTab(7, -1, 'Pinned mail', 'https://mail.example.com/', { pinned: true }),
+      makeTab(8, 30, 'Open PR', 'https://github.com/acme/app/pull/1'),
+    ],
+    groups: [
+      { id: 10, title: 'Work', color: 'blue' },
+      { id: 20, title: 'Home', color: 'green' },
+      { id: 30, title: 'PRs', color: 'purple' },
+    ],
+  });
+  world.respondWith([
+    { groupName: 'Work', tabIndices: [1, 2] },
+    { groupName: 'Home', tabIndices: [3, 4] },
+  ]);
+
+  const result = await world.context.organizeTabs(true, false, '', 2, 1, []);
+
+  assert.equal(result.success, true);
+  assert.equal(result.refined, true);
+  assert.equal(result.movedCount, 1);
+  assert.match(world.prompt, /1\. \[Work\] "Jira board"/);
+  assert.match(world.prompt, /4\. \[Home\] "Tailscale admin"/);
+  assert.match(world.prompt, /5\. \[ungrouped\] "Random article"/);
+  assert.doesNotMatch(world.prompt, /Video|Pinned mail|Open PR/);
+  assert.deepEqual(world.calls.ungroup, []);
+  assert.deepEqual(world.calls.group, [{ groupId: 20, tabIds: [3] }]);
+  assert.deepEqual(world.calls.update, []);
+  assert.equal(world.tabs.find(tab => tab.id === 4).groupId, 20);
+  assert.equal(world.tabs.find(tab => tab.id === 5).groupId, -1);
+  assert.equal(world.tabs.find(tab => tab.id === 6).groupId, 10);
+});
+
+test('refine mode sends undersized new groups and reserved names to Misc', async () => {
+  const world = setupOrganizeWorld({
+    settings: { refineExistingGroups: true, preserveGroupsMinTabs: 1 },
+    tabs: [
+      makeTab(1, 10, 'Jira board', 'https://acme.atlassian.net/jira'),
+      makeTab(2, 10, 'Recipe', 'https://food.example.com/'),
+      makeTab(3, -1, 'Repo one', 'https://github.com/acme/tool'),
+      makeTab(4, -1, 'Repo issues', 'https://github.com/acme/tool/issues'),
+      makeTab(5, -1, 'Sneaky', 'https://example.com/pr'),
+    ],
+    groups: [{ id: 10, title: 'Work', color: 'blue' }],
+  });
+  world.respondWith([
+    { groupName: 'Work', tabIndices: [1] },
+    { groupName: 'Cooking', tabIndices: [2] },
+    { groupName: 'tool', tabIndices: [3, 4] },
+    { groupName: 'PRs', tabIndices: [5] },
+  ]);
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1, []);
+
+  assert.equal(result.success, true);
+  assert.equal(result.movedCount, 4);
+  assert.equal(result.groupCount, 2);
+  const titleOf = (tabId) => world.groups.find(group => group.id === world.tabs.find(tab => tab.id === tabId).groupId)?.title;
+  assert.equal(titleOf(1), 'Work');
+  assert.equal(titleOf(2), 'Misc');
+  assert.equal(titleOf(5), 'Misc');
+  assert.equal(titleOf(3), 'tool');
+  assert.equal(titleOf(4), 'tool');
+  assert.equal(world.groups.find(group => group.id === 10).title, 'Work');
+});
+
+test('refine mode skips tabs that changed group while AI was running', async () => {
+  const world = setupOrganizeWorld({
+    settings: { refineExistingGroups: true, preserveGroupsMinTabs: 0 },
+    tabs: [
+      makeTab(1, 10, 'Recipe', 'https://food.example.com/'),
+      makeTab(2, 20, 'Home Assistant', 'https://ha.example.net/'),
+    ],
+    groups: [{ id: 10, title: 'Work', color: 'blue' }, { id: 20, title: 'Home', color: 'green' }],
+  });
+  world.respondWith([{ groupName: 'Home', tabIndices: [1, 2] }]);
+  const respond = world.context.fetch;
+  world.context.fetch = async (...args) => {
+    world.tabs.find(tab => tab.id === 1).groupId = -1;
+    return respond(...args);
+  };
+
+  const result = await world.context.organizeTabs(false, false, '', 0, 1, []);
+
+  assert.equal(result.success, true);
+  assert.deepEqual(world.calls.group, []);
+  assert.equal(world.tabs.find(tab => tab.id === 1).groupId, -1);
+});
+
+test('without refine mode, small groups are still ungrouped and reorganized', async () => {
+  const world = setupOrganizeWorld({
+    settings: { refineExistingGroups: false },
+    tabs: [
+      makeTab(1, 10, 'Docs one', 'https://example.com/docs/one'),
+      makeTab(2, -1, 'Docs two', 'https://example.com/docs/two'),
+    ],
+    groups: [{ id: 10, title: 'Work', color: 'blue' }],
+  });
+  world.respondWith([{ groupName: 'Docs', tabIndices: [1, 2] }]);
+
+  const result = await world.context.organizeTabs(true, false, '', 1, 1, []);
+
+  assert.equal(result.success, true);
+  assert.equal(result.refined, undefined);
+  assert.deepEqual(world.calls.ungroup, [[1]]);
+  assert.doesNotMatch(world.prompt, /\[Work\]|\[ungrouped\]/);
+});
+
+test('refine prompts list existing groups and keep custom instructions for every provider', () => {
+  const { context } = loadBackground();
+  const prompt = context.buildOrganizePrompt(
+    [
+      { title: 'Jira "board"', url: 'https://acme.atlassian.net/', currentGroup: 'Work' },
+      { title: 'News', url: 'https://news.example.com/', currentGroup: '' },
+    ],
+    'Group rvsharma.com as Home',
+    [{ id: 10, title: 'Work' }, { id: 20, title: 'Home' }],
+    2
+  );
+  assert.match(prompt, /1\. \[Work\] "Jira 'board'"/);
+  assert.match(prompt, /2\. \[ungrouped\] "News"/);
+  assert.match(prompt, /Existing groups:\n- "Work"\n- "Home"/);
+  assert.match(prompt, /MORE than 2 tab\(s\)/);
+  assert.match(prompt, /Additional instructions: Group rvsharma\.com as Home/);
+  assert.doesNotMatch(context.buildOrganizePrompt([{ title: 'News', url: 'https://news.example.com/' }], ''), /\[ungrouped\]/);
+});
+
+test('merge mode keeps excluded tabs out of preserved-group samples in the AI prompt', async () => {
+  const world = setupOrganizeWorld({
+    settings: {
+      mergeIntoExisting: true,
+      preserveGroups: true,
+      preserveGroupsMinTabs: 1,
+      excludedDomains: 'mail.google.com',
+    },
+    tabs: [
+      makeTab(1, 50, 'Inbox user@example.com', 'https://mail.google.com/mail/u/0/#inbox'),
+      makeTab(2, 50, 'Client notes', 'https://acme.example.com/notes'),
+      makeTab(3, 50, 'Client invoice', 'https://acme.example.com/invoices'),
+      makeTab(4, -1, 'Contract draft', 'https://acme.example.com/draft'),
+      makeTab(5, -1, 'Contract final', 'https://acme.example.com/final'),
+    ],
+    groups: [{ id: 50, title: 'Work', color: 'blue' }],
+  });
+  world.respondWith([{ groupName: 'Work', tabIndices: [1, 2] }]);
+
+  const result = await world.context.organizeTabs(true, true, '', 1, 1, []);
+
+  assert.equal(result.success, true);
+  assert.match(world.prompt, /Existing Group "Work": 2 tab\(s\)/);
+  assert.match(world.prompt, /1\. "Contract draft"/);
+  assert.match(world.prompt, /"Client notes"/);
+  assert.doesNotMatch(world.prompt, /Inbox user@example\.com/);
+  assert.doesNotMatch(world.prompt, /user@example\.com/);
+  assert.doesNotMatch(world.prompt, /mail\.google\.com/);
+  assert.doesNotMatch(world.prompt, /#inbox/);
+  assert.deepEqual(world.calls.group, [{ groupId: 50, tabIds: [4, 5] }]);
+  assert.equal(world.tabs.find(tab => tab.id === 1).groupId, 50);
+});
+
+test('refine mode reuses an existing group whose name is longer than 20 characters', async () => {
+  const longName = 'Client Alpha Productions';
+  assert.equal(longName.length, 24);
+  const world = setupOrganizeWorld({
+    settings: { refineExistingGroups: true, preserveGroupsMinTabs: 1 },
+    tabs: [
+      makeTab(1, 10, 'Alpha brief', 'https://acme.example.com/brief'),
+      makeTab(2, 10, 'Alpha timeline', 'https://acme.example.com/timeline'),
+      makeTab(3, -1, 'Alpha invoice', 'https://acme.example.com/invoice'),
+    ],
+    groups: [{ id: 10, title: longName, color: 'blue' }],
+  });
+  world.respondWith([{ groupName: longName, tabIndices: [1, 2, 3] }]);
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1, []);
+
+  assert.equal(result.success, true);
+  assert.equal(result.groupCount, 0);
+  assert.equal(result.movedCount, 1);
+  assert.equal(world.groups.length, 1);
+  assert.equal(world.groups[0].title, longName);
+  assert.deepEqual(world.calls.update, []);
+  assert.deepEqual(world.calls.group, [{ groupId: 10, tabIds: [3] }]);
+  assert.equal(world.tabs.find(tab => tab.id === 3).groupId, 10);
+  assert.match(world.prompt, new RegExp(`"${longName}"`));
+  assert.match(world.prompt, /NEW group name is limited to 20 characters/);
+});
+
+test('refine mode checks the minimum new-group size after dropping stale tabs', async () => {
+  const world = setupOrganizeWorld({
+    settings: { refineExistingGroups: true, preserveGroupsMinTabs: 2 },
+    tabs: [
+      makeTab(1, 10, 'Jira board', 'https://acme.atlassian.net/jira'),
+      makeTab(2, -1, 'Recipe one', 'https://food.example.com/one'),
+      makeTab(3, -1, 'Recipe two', 'https://food.example.com/two'),
+      makeTab(4, -1, 'Recipe three', 'https://food.example.com/three'),
+    ],
+    groups: [{ id: 10, title: 'Work', color: 'blue' }],
+  });
+  world.respondWith([
+    { groupName: 'Work', tabIndices: [1] },
+    { groupName: 'Recipes', tabIndices: [2, 3, 4] },
+  ]);
+  const respond = world.context.fetch;
+  world.context.fetch = async (...args) => {
+    // Tab 4 navigates while the provider is answering, so only two live tabs remain.
+    world.tabs.find(tab => tab.id === 4).url = 'https://food.example.com/three?changed=1';
+    return respond(...args);
+  };
+
+  const result = await world.context.organizeTabs(false, false, '', 2, 1, []);
+
+  assert.equal(result.success, true);
+  assert.equal(world.groups.some(group => group.title === 'Recipes'), false);
+  const miscGroup = world.groups.find(group => group.title === 'Misc');
+  assert.ok(miscGroup);
+  assert.equal(world.tabs.find(tab => tab.id === 2).groupId, miscGroup.id);
+  assert.equal(world.tabs.find(tab => tab.id === 3).groupId, miscGroup.id);
+  assert.equal(world.tabs.find(tab => tab.id === 4).groupId, -1);
+});
+
+test('a trailing-dot hostname matches its excluded domain without matching lookalikes', async () => {
+  const { context } = loadBackground();
+  const domains = context.parseExcludedDomains('youtube.com');
+  assert.equal(context.isExcludedTab({ url: 'https://youtube.com./' }, domains), true);
+  assert.equal(context.isExcludedTab({ url: 'https://www.youtube.com./watch?v=1' }, domains), true);
+  assert.equal(context.isExcludedTab({ url: 'https://youtube.com.evil.example./' }, domains), false);
+  assert.equal(context.isExcludedTab({ url: 'https://notyoutube.com./' }, domains), false);
+  assert.deepEqual(
+    Array.from(context.parseExcludedDomains('*.example.org.\nhttps://YOUTUBE.com./feed')),
+    ['example.org', 'youtube.com']
+  );
+
+  const world = setupOrganizeWorld({
+    settings: { preserveGroups: false, excludedDomains: 'youtube.com' },
+    tabs: [
+      makeTab(1, 50, 'Videos', 'https://youtube.com./'),
+      makeTab(2, 50, 'Docs one', 'https://example.com/docs/one'),
+      makeTab(3, -1, 'Docs two', 'https://example.com/docs/two'),
+    ],
+    groups: [{ id: 50, title: 'Random', color: 'blue' }],
+  });
+  world.respondWith([{ groupName: 'Docs', tabIndices: [1, 2] }]);
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1, []);
+
+  assert.equal(result.success, true);
+  assert.doesNotMatch(world.prompt, /youtube\.com\.|Videos/);
+  assert.equal(world.calls.ungroup.flat().includes(1), false);
+  assert.equal(world.calls.group.some(call => call.tabIds.includes(1)), false);
+  assert.equal(world.tabs.find(tab => tab.id === 1).groupId, 50);
+});
+
+test('refine mode sorting skips a group that contains an excluded tab', async () => {
+  const world = setupOrganizeWorld({
+    settings: {
+      refineExistingGroups: true,
+      preserveGroupsMinTabs: 0,
+      sortTabsWithinGroupsByTitle: true,
+      excludedDomains: 'youtube.com',
+    },
+    tabs: [
+      makeTab(1, 10, 'Zebra video', 'https://www.youtube.com/watch?v=1'),
+      makeTab(2, 10, 'Alpha doc', 'https://example.com/alpha'),
+      makeTab(3, 10, 'Mike doc', 'https://example.com/mike'),
+      makeTab(4, 20, 'Yard work', 'https://example.com/yard'),
+      makeTab(5, 20, 'Bake bread', 'https://example.com/bake'),
+    ],
+    groups: [
+      { id: 10, title: 'Work', color: 'blue' },
+      { id: 20, title: 'Home', color: 'green' },
+    ],
+  });
+  const moves = [];
+  world.chrome.tabs.move = async (id, { index }) => {
+    moves.push({ id, index });
+    world.tabs.find(tab => tab.id === id).index = index;
+  };
+  world.respondWith([
+    { groupName: 'Work', tabIndices: [1, 2] },
+    { groupName: 'Home', tabIndices: [3, 4] },
+  ]);
+
+  const result = await world.context.organizeTabs(false, false, '', 0, 1, []);
+
+  assert.equal(result.success, true);
+  assert.doesNotMatch(world.prompt, /Zebra video/);
+  assert.deepEqual(moves.filter(move => [1, 2, 3].includes(move.id)), []);
+  assert.equal(world.tabs.find(tab => tab.id === 1).index, 1);
+  assert.equal(world.tabs.find(tab => tab.id === 2).index, 2);
+  assert.equal(world.tabs.find(tab => tab.id === 3).index, 3);
+  assert.deepEqual(moves, [{ id: 5, index: 4 }, { id: 4, index: 5 }]);
+});
+
+test('organization-mode sorting skips a preserved group that contains an excluded tab', async () => {
+  const world = setupOrganizeWorld({
+    settings: {
+      preserveGroups: true,
+      preserveGroupsMinTabs: 1,
+      sortTabsWithinGroupsByTitle: true,
+      excludedDomains: 'youtube.com',
+    },
+    tabs: [
+      makeTab(1, 50, 'Zebra video', 'https://www.youtube.com/watch?v=1'),
+      makeTab(2, 50, 'Alpha doc', 'https://example.com/alpha'),
+      makeTab(3, 50, 'Mike doc', 'https://example.com/mike'),
+      makeTab(4, -1, 'Docs zeta', 'https://example.com/zeta'),
+      makeTab(5, -1, 'Docs alpha', 'https://example.com/alpha-docs'),
+    ],
+    groups: [{ id: 50, title: 'Work', color: 'blue' }],
+  });
+  const moves = [];
+  world.chrome.tabs.move = async (id, { index }) => {
+    moves.push({ id, index });
+    world.tabs.find(tab => tab.id === id).index = index;
+  };
+  world.respondWith([{ groupName: 'Docs', tabIndices: [1, 2] }]);
+
+  const result = await world.context.organizeTabs(true, false, '', 1, 1, []);
+
+  assert.equal(result.success, true);
+  assert.deepEqual(world.calls.ungroup, []);
+  assert.equal(world.tabs.find(tab => tab.id === 1).groupId, 50);
+  assert.deepEqual(moves.filter(move => [1, 2, 3].includes(move.id)), []);
+  assert.equal(world.tabs.find(tab => tab.id === 1).index, 1);
+  assert.equal(world.tabs.find(tab => tab.id === 2).index, 2);
+  assert.equal(world.tabs.find(tab => tab.id === 3).index, 3);
+  const docsGroup = world.groups.find(group => group.title === 'Docs');
+  assert.ok(docsGroup);
+  assert.deepEqual(moves, [
+    { id: 5, index: 4 },
+    { id: 4, index: 5 },
+  ]);
+  assert.equal(world.tabs.find(tab => tab.id === 4).groupId, docsGroup.id);
+  assert.equal(world.tabs.find(tab => tab.id === 5).groupId, docsGroup.id);
+});
+
+test('an excluded pending URL marks the tab excluded even when the current URL is not', async () => {
+  const { context } = loadBackground();
+  const domains = context.parseExcludedDomains('youtube.com');
+  assert.equal(context.isExcludedTab({
+    url: 'https://example.com/article',
+    pendingUrl: 'https://www.youtube.com/watch?v=1',
+  }, domains), true);
+  assert.equal(context.isExcludedTab({
+    url: 'https://www.youtube.com/watch?v=1',
+    pendingUrl: 'https://example.com/article',
+  }, domains), true);
+  assert.equal(context.isExcludedTab({
+    url: 'https://example.com/article',
+    pendingUrl: 'https://example.com/other',
+  }, domains), false);
+
+  const world = setupOrganizeWorld({
+    settings: { preserveGroups: false, excludedDomains: 'youtube.com' },
+    tabs: [
+      makeTab(1, -1, 'Article', 'https://example.com/article', {
+        pendingUrl: 'https://www.youtube.com/watch?v=1',
+      }),
+      makeTab(2, -1, 'Docs one', 'https://example.com/docs/one'),
+      makeTab(3, -1, 'Docs two', 'https://example.com/docs/two'),
+    ],
+    groups: [],
+  });
+  world.respondWith([{ groupName: 'Docs', tabIndices: [1, 2] }]);
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1, []);
+
+  assert.equal(result.success, true);
+  assert.doesNotMatch(world.prompt, /Article|youtube/);
+  assert.match(world.prompt, /1\. "Docs one"/);
+  assert.equal(world.calls.group.some(call => call.tabIds.includes(1)), false);
+  assert.equal(world.tabs.find(tab => tab.id === 1).groupId, -1);
+});
+
+test('sorting rechecks excluded domains after a tab navigates during the provider call', async () => {
+  const world = setupOrganizeWorld({
+    settings: {
+      refineExistingGroups: true,
+      preserveGroupsMinTabs: 0,
+      sortTabsWithinGroupsByTitle: true,
+      excludedDomains: 'youtube.com',
+    },
+    tabs: [
+      makeTab(1, 10, 'Zulu doc', 'https://example.com/zulu'),
+      makeTab(2, 10, 'Alpha doc', 'https://example.com/alpha'),
+    ],
+    groups: [{ id: 10, title: 'Work', color: 'blue' }],
+  });
+  const moves = [];
+  world.chrome.tabs.move = async (id, { index }) => {
+    moves.push({ id, index });
+    world.tabs.find(tab => tab.id === id).index = index;
+  };
+  world.respondWith([{ groupName: 'Work', tabIndices: [1, 2] }]);
+  const respond = world.context.fetch;
+  world.context.fetch = async (...args) => {
+    // Tab 2 commits to an excluded domain while the provider is answering.
+    Object.assign(world.tabs.find(tab => tab.id === 2), {
+      url: 'https://www.youtube.com/watch?v=1',
+      pendingUrl: '',
+    });
+    return respond(...args);
+  };
+
+  const result = await world.context.organizeTabs(false, false, '', 0, 1, []);
+
+  assert.equal(result.success, true);
+  assert.deepEqual(world.calls.group, []);
+  assert.deepEqual(moves, []);
+  assert.equal(world.tabs.find(tab => tab.id === 2).groupId, 10);
+  assert.equal(world.tabs.find(tab => tab.id === 2).index, 2);
+  assert.equal(world.tabs.find(tab => tab.id === 1).index, 1);
+});
+
+test('merge mode keeps split-view tabs out of preserved-group samples in the AI prompt', async () => {
+  const world = setupOrganizeWorld({
+    settings: { mergeIntoExisting: true, preserveGroups: true, preserveGroupsMinTabs: 1 },
+    tabs: [
+      makeTab(1, 50, 'Split secret', 'https://acme.example.com/split', { splitViewId: 7 }),
+      makeTab(2, 50, 'Client notes', 'https://acme.example.com/notes'),
+      makeTab(3, 50, 'Client invoice', 'https://acme.example.com/invoices'),
+      makeTab(4, -1, 'Contract draft', 'https://acme.example.com/draft'),
+      makeTab(5, -1, 'Contract final', 'https://acme.example.com/final'),
+    ],
+    groups: [{ id: 50, title: 'Work', color: 'blue' }],
+  });
+  world.respondWith([{ groupName: 'Work', tabIndices: [1, 2] }]);
+
+  const result = await world.context.organizeTabs(true, true, '', 1, 1, []);
+
+  assert.equal(result.success, true);
+  assert.match(world.prompt, /Existing Group "Work": 2 tab\(s\)/);
+  assert.match(world.prompt, /"Client notes"/);
+  assert.doesNotMatch(world.prompt, /Split secret/);
+  assert.deepEqual(world.calls.ungroup, []);
+  assert.deepEqual(world.calls.group, [{ groupId: 50, tabIds: [4, 5] }]);
+  assert.equal(world.tabs.find(tab => tab.id === 1).groupId, 50);
+});
+
+test('refine mode rechecks the new-group size right before creating the group', async () => {
+  const world = setupOrganizeWorld({
+    settings: { refineExistingGroups: true, preserveGroupsMinTabs: 2 },
+    tabs: [
+      makeTab(1, 10, 'Jira board', 'https://acme.atlassian.net/jira'),
+      makeTab(2, -1, 'Recipe one', 'https://food.example.com/one'),
+      makeTab(3, -1, 'Recipe two', 'https://food.example.com/two'),
+      makeTab(4, -1, 'Recipe three', 'https://food.example.com/three'),
+      makeTab(5, -1, 'Work notes', 'https://acme.example.com/notes'),
+      makeTab(6, -1, 'Work docs', 'https://acme.example.com/docs'),
+      makeTab(7, 20, 'Home assistant', 'https://ha.example.net/'),
+    ],
+    groups: [
+      { id: 10, title: 'Work', color: 'blue' },
+      { id: 20, title: 'Home', color: 'green' },
+    ],
+  });
+  world.respondWith([
+    { groupName: 'Home', tabIndices: [1, 7] },
+    { groupName: 'Recipes', tabIndices: [2, 3, 4] },
+    { groupName: 'Work', tabIndices: [5, 6] },
+  ]);
+  const realGroup = world.chrome.tabs.group;
+  let changedTab = false;
+  world.chrome.tabs.group = async (args) => {
+    if (!changedTab) {
+      changedTab = true;
+      // Tab 4 changes while the first target is applied, after the first size check passed.
+      world.tabs.find(tab => tab.id === 4).url = 'https://food.example.com/three?changed=1';
+    }
+    return realGroup(args);
+  };
+
+  const result = await world.context.organizeTabs(false, false, '', 2, 1, []);
+
+  assert.equal(result.success, true);
+  assert.equal(world.groups.some(group => group.title === 'Recipes'), false);
+  const miscGroup = world.groups.find(group => group.title === 'Misc');
+  assert.ok(miscGroup);
+  assert.equal(world.tabs.find(tab => tab.id === 2).groupId, miscGroup.id);
+  assert.equal(world.tabs.find(tab => tab.id === 3).groupId, miscGroup.id);
+  assert.equal(world.tabs.find(tab => tab.id === 4).groupId, -1);
+});
+
+test('quoted existing group names are listed exactly and reused in refine mode', async () => {
+  const { context } = loadBackground();
+  const name = 'Client "Alpha"';
+
+  const mergePrompt = context.formatExistingGroupsForPrompt([
+    { id: 10, title: name, tabs: [{ title: 'Invoice "Q3"' }] },
+  ]);
+  assert.match(mergePrompt, /Existing Group "Client \\"Alpha\\"": 1 tab\(s\)/);
+  assert.match(mergePrompt, /"Invoice \\"Q3\\""/);
+
+  const refinePrompt = context.buildOrganizePrompt(
+    [{ title: 'Brief', url: 'https://acme.example.com/brief', currentGroup: name }],
+    '',
+    [{ id: 10, title: name }],
+    1
+  );
+  const displayedLine = refinePrompt.match(/Existing groups:\n- (.*)/)[1];
+  assert.equal(JSON.parse(displayedLine), name);
+
+  const world = setupOrganizeWorld({
+    settings: { refineExistingGroups: true, preserveGroupsMinTabs: 1 },
+    tabs: [
+      makeTab(1, 10, 'Alpha brief', 'https://acme.example.com/brief'),
+      makeTab(2, 10, 'Alpha timeline', 'https://acme.example.com/timeline'),
+      makeTab(3, -1, 'Alpha invoice', 'https://acme.example.com/invoice'),
+    ],
+    groups: [{ id: 10, title: name, color: 'blue' }],
+  });
+  world.respondWith([{ groupName: JSON.parse(displayedLine), tabIndices: [1, 2, 3] }]);
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1, []);
+
+  assert.equal(result.success, true);
+  assert.equal(result.groupCount, 0);
+  assert.equal(world.groups.length, 1);
+  assert.equal(world.groups[0].title, name);
+  assert.deepEqual(world.calls.group, [{ groupId: 10, tabIds: [3] }]);
+  assert.equal(world.tabs.find(tab => tab.id === 3).groupId, 10);
+  assert.match(world.prompt, /- "Client \\"Alpha\\""/);
+});
+function withChromeAiResponses(context, responses) {
+  const prompts = [];
+  context.LanguageModel = {
+    availability: async () => 'available',
+    create: async () => ({
+      prompt: async (prompt, options) => {
+        prompts.push({ prompt, options });
+        return responses[prompts.length - 1];
+      },
+      destroy() {},
+    }),
+  };
+  return prompts;
+}
+
+/** Run the full organizeTabs path against a Chrome AI provider returning canned batch responses. */
+function setupChromeAiOrganize(tabCount, responses) {
+  const { chrome, context } = loadBackground();
+  const tabs = Array.from({ length: tabCount }, (_, i) => ({
+    id: i + 1,
+    index: i,
+    pinned: false,
+    groupId: -1,
+    windowId: 1,
+    title: `Tab ${i + 1}`,
+    url: `https://example.com/${i + 1}`,
+  }));
+  const prompts = withChromeAiResponses(context, responses);
+  const groupedTabIds = [];
+  const groupUpdates = [];
+
+  chrome.storage.local.get = async () => ({ aiProvider: 'chrome-ai', aiFallbackEnabled: false });
+  chrome.tabs.query = async () => tabs.map(tab => ({ ...tab }));
+  chrome.tabs.get = async (id) => ({ ...tabs.find(tab => tab.id === id) });
+  chrome.tabGroups.query = async () => [];
+  chrome.tabs.group = async ({ tabIds }) => {
+    groupedTabIds.push(...tabIds);
+    return 1;
+  };
+  chrome.tabGroups.update = async (id, properties) => {
+    groupUpdates.push({ id, ...properties });
+  };
+
+  return { chrome, context, tabs, prompts, groupedTabIds, groupUpdates };
+}
+
+test('Chrome AI keeps valid groups when a constrained response has empty groups', async () => {
+  const { context } = loadBackground();
+  const prompts = withChromeAiResponses(context, [
+    '[{"groupName":"Docs","tabIndices":[1,2]},{"groupName":"Nothing","tabIndices":[]}]',
+  ]);
+  const tabs = [
+    { title: 'Docs one', url: 'https://example.com/one' },
+    { title: 'Docs two', url: 'https://example.com/two' },
+  ];
+
+  const groups = await context.callChromeAI(tabs, '', null, 1);
+
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].options.responseConstraint.type, 'array');
+  assert.deepEqual(JSON.parse(JSON.stringify(groups)), [{ groupName: 'Docs', tabIndices: [1, 2] }]);
+});
+
+test('Chrome AI tolerates an empty batch and shifts later batch indices', async () => {
+  const { context } = loadBackground();
+  const batchSize = vm.runInContext('CHROME_AI_TABS_PER_BATCH', context);
+  const tabs = Array.from({ length: batchSize + 2 }, (_, i) => ({
+    title: `Tab ${i + 1}`,
+    url: `https://example.com/${i + 1}`,
+  }));
+  withChromeAiResponses(context, ['[]', '[{"groupName":"Tail","tabIndices":[1,"2"]}]']);
+
+  const groups = await context.callChromeAI(tabs, '', null, 1);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(groups)),
+    [{ groupName: 'Tail', tabIndices: [batchSize + 1, batchSize + 2] }]
+  );
+});
+
+test('Chrome AI still rejects responses that are not tab groups', async () => {
+  const { context } = loadBackground();
+  withChromeAiResponses(context, ['{"message":"sorry"}']);
+  await assert.rejects(
+    context.callChromeAI([{ title: 'A', url: 'https://example.com/' }], '', null, 1),
+    /Invalid response format from Chrome built-in AI/
+  );
+});
+
+test('organizeTabs puts all tabs in Misc when a single Chrome AI batch is empty', async () => {
+  const world = setupChromeAiOrganize(2, ['[]']);
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1, []);
+
+  assert.equal(result.success, true);
+  assert.equal(result.providerUsed, 'chrome-ai');
+  assert.equal(result.groupedCount, 2);
+  assert.deepEqual([...world.groupedTabIds].sort((a, b) => a - b), [1, 2]);
+  assert.deepEqual(world.groupUpdates.map(update => update.title), ['Misc']);
+});
+
+test('organizeTabs puts all tabs in Misc when Chrome AI returns only empty groups', async () => {
+  const world = setupChromeAiOrganize(2, ['[{"groupName":"Other","tabIndices":[]}]']);
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1, []);
+
+  assert.equal(result.success, true);
+  assert.equal(result.groupedCount, 2);
+  assert.deepEqual([...world.groupedTabIds].sort((a, b) => a - b), [1, 2]);
+  assert.deepEqual(world.groupUpdates.map(update => update.title), ['Misc']);
+});
+
+test('organizeTabs puts all tabs in Misc when every Chrome AI batch is empty', async () => {
+  const batchSize = vm.runInContext('CHROME_AI_TABS_PER_BATCH', loadBackground().context);
+  const world = setupChromeAiOrganize(batchSize + 2, ['[]', '[]']);
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1, []);
+
+  assert.equal(world.prompts.length, 2);
+  assert.equal(result.success, true);
+  assert.equal(result.groupedCount, batchSize + 2);
+  assert.equal(world.groupedTabIds.length, batchSize + 2);
+  assert.deepEqual(world.groupUpdates.map(update => update.title), ['Misc']);
+});
+
+test('organizeTabs still fails when a Chrome AI response is not a tab-group array', async () => {
+  const world = setupChromeAiOrganize(2, ['{"message":"sorry"}']);
+
+  const result = await world.context.organizeTabs(false, false, '', 1, 1, []);
+
+  assert.equal(result.success, false);
+  assert.equal(world.groupedTabIds.length, 0);
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0].detail, /Invalid response format from Chrome built-in AI/);
+});
+
+test('organizeTabs rejects Chrome AI groups without a tabIndices array', async () => {
+  const responses = [
+    '[{"groupName":"Broken"}]',
+    '[{"groupName":"Broken","tabIndices":null}]',
+    '[{"groupName":"Broken","tabIndices":"1,2"}]',
+  ];
+
+  for (const response of responses) {
+    const world = setupChromeAiOrganize(2, [response]);
+
+    const result = await world.context.organizeTabs(false, false, '', 1, 1, []);
+
+    assert.equal(result.success, false, response);
+    assert.equal(world.groupedTabIds.length, 0, response);
+    assert.equal(result.failures.length, 1, response);
+    assert.match(result.failures[0].detail, /Invalid response format from Chrome built-in AI/, response);
+  }
+});
