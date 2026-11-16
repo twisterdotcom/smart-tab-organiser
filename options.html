@@ -254,6 +254,7 @@
 
         <h3 class="subsection-title">Cloud providers <span class="subsection-note">API key usually required — custom hosts can omit it</span></h3>
         <p class="section-description">Key storage: Keys are saved in your Chrome profile. Use dedicated keys with provider spending limits.</p>
+        <p class="section-description">Model lists refresh when you open Settings, at most once per day for each saved key. Refresh models checks immediately. These requests send no tab data and do not change your selected model. New API formats can still require an extension update.</p>
         <div class="provider-grid" id="cloudProviderGrid">
           <div class="provider-card" data-provider="openai">
             <div class="provider-card-header">OpenAI <span class="primary-badge">Primary</span></div>
@@ -332,16 +333,38 @@
             <p class="provider-card-desc">The extension sends prompts to a server on this computer or on your local network: <code>localhost</code>, <code>127.0.0.1</code>, or a private address such as <code>192.168.1.20</code>. A server elsewhere on the network needs host access, which "Test connection" or a toolbar-started organization asks for once. The server configuration determines whether it processes data locally or forwards it elsewhere. Compatible servers include Ollama, LM Studio, llama.cpp, and vLLM.</p>
             <label class="field-label" for="localBaseUrl">Server address</label>
             <input type="text" id="localBaseUrl" class="api-key-input" placeholder="http://localhost:11434/v1" spellcheck="false" title="localhost, 127.0.0.1, or a private-network address such as http://192.168.1.20:11434/v1">
-            <label class="field-label" for="localModel">Model name</label>
-            <input type="text" id="localModel" class="api-key-input" placeholder="llama3.1:8b" spellcheck="false">
+            <label class="field-label" for="localModelChoices">Installed models and setup suggestions</label>
+            <select id="localModelChoices" class="provider-select" aria-describedby="localModelSuggestion localModelStatus"></select>
+            <p class="model-recommended-hint">Detection runs when you select this provider or open Settings with it selected. It checks only the address above, or Ollama on localhost if blank. No network scan or model download occurs.</p>
+            <label class="field-label" for="localModel">Active model name (manual entry supported)</label>
+            <input type="text" id="localModel" class="api-key-input" placeholder="Select an installed model or enter its exact name" spellcheck="false">
             <div class="local-model-buttons">
-              <button type="button" id="testLocalModelBtn" class="btn btn-secondary">Test connection</button>
+              <button type="button" id="testLocalModelBtn" class="btn btn-secondary">Test connection / Refresh models</button>
             </div>
-            <div id="localModelStatus" class="status"></div>
-            <details class="setup-notes">
-              <summary>Ollama / LM Studio setup</summary>
-              <p>Ollama must be started with extension requests allowed, otherwise it rejects them: <code>OLLAMA_ORIGINS="chrome-extension://*" ollama serve</code></p>
-              <p>In LM Studio, enable CORS in the local server settings; llama.cpp's server allows this by default. Enter the model name exactly as your server reports it — "Test connection" lists what it can see.</p>
+            <div id="localModelStatus" class="status" role="status"></div>
+            <p class="model-recommended-hint" id="localModelSuggestion"></p>
+            <p class="model-recommended-hint"><a id="localModelSource" href="https://ollama.com/library/qwen2.5:1.5b" target="_blank" rel="noopener noreferrer">Official model details and license</a></p>
+            <details class="setup-notes" id="localModelSetup">
+              <summary>Ollama setup commands and suggestion sources</summary>
+              <p>These small-model suggestions use official Ollama specifications, reviewed November 16, 2026. They are starting points, not benchmark winners for tab grouping. Download sizes are approximate, not RAM requirements. Suggestions update with extension releases.</p>
+              <ol>
+                <li>Install Ollama from <a href="https://ollama.com/download" target="_blank" rel="noopener noreferrer">the official download page</a>.</li>
+                <li>For a foreground server, quit any existing Ollama app or service first. Choose your terminal below.</li>
+              </ol>
+              <label class="field-label" for="localSetupShell">Terminal</label>
+              <select id="localSetupShell" class="provider-select">
+                <option value="posix">macOS / Linux shell</option>
+                <option value="powershell">Windows PowerShell</option>
+              </select>
+              <p>Run this command in one terminal. Keep that terminal open. The command allows only this extension's origin.</p>
+              <pre class="setup-command"><code id="localServeCommand"></code></pre>
+              <p>In another terminal, download the suggested model:</p>
+              <pre class="setup-command"><code id="localPullCommand"></code></pre>
+              <p>Then select <strong>Test connection / Refresh models</strong>. Choose the model from the installed group to make it active. The extension never runs these commands.</p>
+              <p>For the macOS app instead of a foreground server, run this command, then quit and reopen Ollama:</p>
+              <pre class="setup-command"><code id="localMacCommand"></code></pre>
+              <p>Linux services and the Windows app need persistent environment settings. See the <a href="https://docs.ollama.com/faq#how-do-i-configure-ollama-server" target="_blank" rel="noopener noreferrer">Ollama server setup guide</a>. Keep the default loopback binding. Do not expose the server to the internet.</p>
+              <p>In LM Studio, enable CORS in the server settings. Other OpenAI-compatible servers use their own setup procedures. Ollama pull commands do not install models into those servers.</p>
             </details>
           </div>
         </div>
@@ -542,6 +565,8 @@
     </footer>
   </div>
   <script src="ai-models.js"></script>
+  <script src="cloud-model-discovery.js"></script>
+  <script src="local-model-picker.js"></script>
   <script src="host-access.js"></script>
   <script src="options.js"></script>
 </body>

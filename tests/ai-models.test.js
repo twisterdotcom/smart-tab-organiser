@@ -6,16 +6,11 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-const MODEL_SOURCE = fs.readFileSync(
-  path.join(__dirname, '..', 'ai-models.js'),
-  'utf8'
-);
+const MODEL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'ai-models.js'), 'utf8');
 
 function loadModelCatalog() {
   const context = {
-    document: {
-      createElement: () => ({ value: '', textContent: '' }),
-    },
+    document: { createElement: () => ({ value: '', textContent: '' }) },
   };
   context.globalThis = context;
   vm.createContext(context);
@@ -23,68 +18,69 @@ function loadModelCatalog() {
   return context;
 }
 
-test('model selectors contain only the current supported catalog', () => {
+test('bundled catalogs include current models and low-cost defaults', () => {
   const context = loadModelCatalog();
   const expected = {
-    openai: {
-      recommended: 'gpt-5.6-terra',
-      models: [
-        'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6',
-        'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.2',
-        'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini',
-      ],
-    },
-    claude: {
-      recommended: 'claude-haiku-4-5-20251001',
-      models: [
-        'claude-fable-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7',
-        'claude-opus-4-6', 'claude-opus-4-5-20251101', 'claude-sonnet-5',
-        'claude-sonnet-4-6', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001',
-      ],
-    },
-    gemini: {
-      recommended: 'gemini-3.7-flash',
-      models: [
-        'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash',
-        'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview',
-        'gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.5-flash-lite',
-        'gemini-2.5-pro',
-      ],
-    },
+    openai: { recommended: 'gpt-6-luna', models: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-luna'] },
+    claude: { recommended: 'claude-haiku-5-5', models: ['claude-fable-5-2', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'] },
+    gemini: { recommended: 'gemini-3.5-flash-lite', models: ['gemini-3.8-flash', 'gemini-3.5-flash-lite'] },
   };
-
   for (const [provider, entry] of Object.entries(expected)) {
     assert.equal(context.getRecommendedModelId(provider), entry.recommended);
-    assert.deepEqual(
-      Array.from(context.listModelsForProvider(provider), model => model.id),
-      entry.models
-    );
+    const ids = Array.from(context.listModelsForProvider(provider), model => model.id);
+    for (const id of entry.models) assert.ok(ids.includes(id), id);
+    assert.equal(new Set(ids).size, ids.length);
+    assert.equal(context.resolveStoredModel(provider, ''), entry.recommended);
   }
   assert.equal(context.AI_MODEL_CATALOG, undefined);
 });
 
-test('retired stored model IDs migrate while active IDs remain selected', () => {
+test('saved IDs survive catalog changes in both Settings and the service worker', () => {
   const context = loadModelCatalog();
-
-  assert.equal(context.resolveStoredModel('openai', 'gpt-5.2-pro'), 'gpt-5.6-terra');
-  assert.equal(context.resolveStoredModel('claude', 'claude-opus-4-1-20250805'), 'claude-haiku-4-5-20251001');
-  assert.equal(context.resolveStoredModel('gemini', 'gemini-2.0-flash'), 'gemini-3.7-flash');
-  assert.equal(context.resolveStoredModel('openai', 'gpt-5.6'), 'gpt-5.6');
-  assert.equal(context.resolveStoredModel('claude', 'claude-opus-4-8'), 'claude-opus-4-8');
-  assert.equal(context.resolveStoredModel('gemini', 'gemini-3.1-flash-lite'), 'gemini-3.1-flash-lite');
+  for (const provider of ['openai', 'claude', 'gemini']) {
+    assert.equal(context.resolveStoredModel(provider, 'new-account-model'), 'new-account-model');
+    assert.equal(context.resolveStoredModel(provider, '  saved-model  '), 'saved-model');
+  }
+  assert.equal(context.resolveStoredModel('openai', 'gpt-5.6-terra'), 'gpt-5.6-terra');
+  assert.equal(context.resolveStoredModel('gemini', 'gemini-3.7-flash'), 'gemini-3.7-flash');
 });
 
-test('model lists cannot be changed through the public helper', () => {
+test('returned lists and entries cannot mutate the catalog', () => {
   const context = loadModelCatalog();
-  const models = context.listModelsForProvider('openai');
-  models.pop();
+  const original = context.listModelsForProvider('openai');
+  const id = original[0].id;
+  const length = original.length;
+  original[0].id = 'changed';
+  original.pop();
+  assert.equal(context.listModelsForProvider('openai').length, length);
+  assert.equal(context.listModelsForProvider('openai')[0].id, id);
+});
 
-  assert.deepEqual(
-    Array.from(context.listModelsForProvider('openai'), model => model.id),
-    [
-      'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6',
-      'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.2',
-      'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini',
-    ]
-  );
+test('discovery supplements and deduplicates the bundled list without changing defaults', () => {
+  const context = loadModelCatalog();
+  const models = [{ id: 'new-model', label: 'New model' }, { id: 'gpt-6-luna', label: 'Available Luna' }];
+  context.setDiscoveredModels('openai', models);
+  models[0].id = 'changed';
+  const list = context.listModelsForProvider('openai');
+  assert.equal(list[0].id, 'new-model');
+  assert.equal(list.filter(model => model.id === 'gpt-6-luna').length, 1);
+  assert.equal(context.getRecommendedModelId('openai'), 'gpt-6-luna');
+  context.setDiscoveredModels('openai', []);
+  assert.equal(context.findModelEntry('openai', 'new-model'), undefined);
+});
+
+test('selector retains saved selections absent from the bundled or discovered lists', () => {
+  const context = loadModelCatalog();
+  const options = [];
+  const select = { textContent: '', value: '', appendChild: option => options.push(option) };
+  assert.equal(context.populateModelSelect(select, 'gemini', 'gemini-future-flash'), 'gemini-future-flash');
+  assert.equal(select.value, 'gemini-future-flash');
+  assert.equal(options[0].value, 'gemini-future-flash');
+  assert.match(options[0].textContent, /Saved selection/);
+});
+
+test('unknown providers have no bundled models', () => {
+  const context = loadModelCatalog();
+  assert.equal(context.getRecommendedModelId('unknown'), null);
+  assert.equal(context.listModelsForProvider('unknown').length, 0);
 });

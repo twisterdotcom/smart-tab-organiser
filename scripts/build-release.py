@@ -19,6 +19,8 @@ PACKAGE_FILES = (
     "manifest.json",
     "background.js",
     "ai-models.js",
+    "cloud-model-discovery.js",
+    "local-model-picker.js",
     "host-access.js",
     "options.html",
     "options.css",

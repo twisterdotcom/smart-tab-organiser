@@ -63,6 +63,74 @@ document.addEventListener('DOMContentLoaded', async () => {
   wireModelSelect(openaiModelSelect, 'openai', openaiModelRecommendedEl, 'openaiModel');
   wireModelSelect(claudeModelSelect, 'claude', claudeModelRecommendedEl, 'claudeModel');
   wireModelSelect(geminiModelSelect, 'gemini', geminiModelRecommendedEl, 'geminiModel');
+
+  const cloudModelControls = [
+    { provider: 'openai', input: openaiKeyInput, select: openaiModelSelect, hint: openaiModelRecommendedEl },
+    { provider: 'claude', input: claudeKeyInput, select: claudeModelSelect, hint: claudeModelRecommendedEl },
+    { provider: 'gemini', input: geminiKeyInput, select: geminiModelSelect, hint: geminiModelRecommendedEl },
+  ];
+  const MODEL_CACHE_MAX_AGE = 24 * 60 * 60 * 1000;
+
+  async function refreshCloudModelList(control, force = false) {
+    const generation = control.generation = (control.generation || 0) + 1;
+    const key = control.input.value.trim();
+    const isCurrent = () => control.generation === generation && control.input.value.trim() === key;
+    control.button.disabled = true;
+    control.status.textContent = key ? 'Checking model list…' : 'Add an API key to discover models.';
+    try {
+      if (!key) return;
+      // Bind cached availability to the credential without storing a second copy of the key.
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key));
+      const fingerprint = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+      const cacheKey = `${control.provider}ModelCatalog`;
+      const stored = await chrome.storage.local.get(cacheKey);
+      const cache = stored[cacheKey];
+      const usable = cache && cache.fingerprint === fingerprint &&
+        Array.isArray(cache.models) && cache.models.length && Number.isFinite(cache.updatedAt);
+      const render = models => {
+        globalThis.setDiscoveredModels(control.provider, models);
+        globalThis.populateModelSelect(control.select, control.provider, control.select.value);
+        updateModelRecommendedHint(control.provider, control.hint, control.select);
+      };
+      if (!isCurrent()) return;
+      if (usable) render(cache.models);
+      if (!force && usable && Date.now() >= cache.updatedAt && Date.now() - cache.updatedAt < MODEL_CACHE_MAX_AGE) {
+        control.status.textContent = `Cached model list. Last checked: ${new Date(cache.updatedAt).toLocaleString()}.`;
+        return;
+      }
+      const models = await globalThis.fetchCloudModels(control.provider, key);
+      if (!isCurrent()) return;
+      const updatedAt = Date.now();
+      await chrome.storage.local.set({ [cacheKey]: { fingerprint, models, updatedAt } });
+      if (!isCurrent()) return;
+      render(models);
+      control.status.textContent = `Model list updated: ${new Date(updatedAt).toLocaleString()}.`;
+    } catch (error) {
+      if (isCurrent()) control.status.textContent = 'Could not refresh models. The saved or bundled list is still available. Check the API key and try again.';
+    } finally {
+      if (isCurrent()) control.button.disabled = false;
+    }
+  }
+
+  for (const control of cloudModelControls) {
+    control.button = document.createElement('button');
+    control.button.type = 'button';
+    control.button.className = 'btn btn-secondary';
+    control.button.textContent = 'Refresh models';
+    control.button.addEventListener('click', () => refreshCloudModelList(control, true));
+    control.status = document.createElement('p');
+    control.status.className = 'model-recommended-hint';
+    control.status.setAttribute('role', 'status');
+    control.hint.after(control.button, control.status);
+    control.input.addEventListener('input', () => {
+      control.generation = (control.generation || 0) + 1;
+      control.button.disabled = false;
+      globalThis.setDiscoveredModels(control.provider, []);
+      globalThis.populateModelSelect(control.select, control.provider, control.select.value);
+      control.status.textContent = 'API key changed. Select Refresh models to update the list.';
+    });
+    control.input.addEventListener('change', () => refreshCloudModelList(control));
+  }
   const customInstructionsOptions = document.getElementById('customInstructionsOptions');
   const preserveGroupsCheckbox = document.getElementById('preserveGroups');
   const preserveGroupsMinTabsInput = document.getElementById('preserveGroupsMinTabs');
@@ -360,6 +428,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       geminiModel: geminiResolved,
     });
   }
+  for (const control of cloudModelControls) refreshCloudModelList(control);
   if (settings.customInstructionsOptions) {
     customInstructionsOptions.value = settings.customInstructionsOptions;
   }
@@ -705,6 +774,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (aiProviderSelect.value === 'chrome-ai') {
       checkChromeAi();
     }
+    if (aiProviderSelect.value === 'local') localModelPicker.refresh(false);
   });
 
   aiFallbackEnabledCheckbox.addEventListener('change', async () => {
@@ -743,42 +813,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     scheduleFallbackUiRefresh();
   });
 
-  // Ask the service worker to check the local server, so the result reflects
-  // the context that actually organizes tabs.
-  testLocalModelBtn.addEventListener('click', async () => {
-    testLocalModelBtn.disabled = true;
-    localModelStatus.textContent = 'Connecting to local model server...';
-    localModelStatus.className = 'status info';
-    try {
-      await requestLocalHostPermissionIfNeeded(localBaseUrlInput.value.trim());
-      const result = await chrome.runtime.sendMessage({
-        action: 'listLocalModels',
-        baseUrl: localBaseUrlInput.value.trim()
-      });
-      if (!result.success) {
-        localModelStatus.textContent = result.error || 'Could not reach the local model server';
-        localModelStatus.className = 'status error';
-        return;
-      }
-      if (result.models.length === 0) {
-        localModelStatus.textContent = `Connected to ${result.baseUrl}, but no models are installed. Pull one first (e.g. "ollama pull llama3.1:8b").`;
-        localModelStatus.className = 'status error';
-        return;
-      }
-      const chosen = localModelInput.value.trim();
-      const known = result.models.includes(chosen);
-      localModelStatus.textContent = `Connected to ${result.baseUrl}. Available: ${result.models.join(', ')}.` +
-        (chosen && !known ? ` Warning: "${chosen}" is not in that list.` : '');
-      localModelStatus.className = chosen && !known ? 'status info' : 'status success';
-    } catch (error) {
-      localModelStatus.textContent = 'Error: ' + error.message;
-      localModelStatus.className = 'status error';
-    } finally {
-      testLocalModelBtn.disabled = false;
-      // A granted or revoked origin changes the fallback chain's status.
+  const localModelPicker = globalThis.createLocalModelPicker({
+    document,
+    chrome,
+    elements: {
+      address: localBaseUrlInput,
+      model: localModelInput,
+      choices: document.getElementById('localModelChoices'),
+      refresh: testLocalModelBtn,
+      status: localModelStatus,
+      suggestion: document.getElementById('localModelSuggestion'),
+      source: document.getElementById('localModelSource'),
+      setup: document.getElementById('localModelSetup'),
+      shell: document.getElementById('localSetupShell'),
+      serveCommand: document.getElementById('localServeCommand'),
+      pullCommand: document.getElementById('localPullCommand'),
+      macCommand: document.getElementById('localMacCommand'),
+    },
+    requestPermission: requestLocalHostPermissionIfNeeded,
+    onSelect: model => {
+      chrome.storage.local.set({ localModel: model });
       scheduleFallbackUiRefresh();
-    }
+    },
+    onRefresh: scheduleFallbackUiRefresh,
   });
+  if (aiProviderSelect.value === 'local') localModelPicker.refresh(false);
 
   // Ask the service worker to test the OpenAI-compatible host, so the result
   // reflects the context that actually organizes tabs.

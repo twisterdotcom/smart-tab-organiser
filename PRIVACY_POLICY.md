@@ -1,6 +1,6 @@
 # Privacy Policy for Smart Tab Organiser
 
-**Last updated:** September 29, 2026
+**Last updated:** November 16, 2026
 
 ## Overview
 
@@ -31,6 +31,7 @@ The extension stores these values in `chrome.storage.local`:
 - Pinned URL rules
 - Tab-group settings
 - AI provider and model settings
+- Cached cloud model lists, refresh timestamps, and credential fingerprints
 - Custom AI instructions
 - Domains that AI organization must skip
 - Optional API keys and a GitHub token
@@ -54,6 +55,10 @@ Duplicate removal, pinned-tab management, tab reloading, and local tab grouping 
 ### Cloud AI providers
 
 Cloud AI is optional. When the user selects a cloud provider and starts AI organization, the extension sends data directly to that provider.
+
+When the user opens Settings, the extension requests model lists from providers with saved API keys. Successful lists remain cached for 24 hours. A manual refresh or changed key also triggers a request. Model-list requests send the provider key but no tab data or prompts.
+
+The local cache includes a SHA-256 fingerprint of the key to associate the list with that credential. It does not include another copy of the key.
 
 Provider fallback is off by default. If the user enables fallback, the extension can send the same data to each eligible provider that it attempts. A provider can receive the prompt even when its request fails.
 
@@ -115,6 +120,12 @@ The server configuration determines whether the server processes the prompt loca
 
 The local server can use HTTP because the first network hop stays on the user's own machine or network. A request to a loopback host stays on the same computer. A request to a private-network host can be read by other devices on that local network, so it is unencrypted and should only be used on a network the user trusts. The extension does not permit any other `http://` host for this feature.
 
+When the local provider is selected, Settings checks the configured server address or the default Ollama address on localhost. It also checks when Settings opens with that provider selected. These requests contain no tab data or prompts. The extension does not scan other addresses or ports.
+
+Detection can request the server version, installed model metadata, and currently loaded model names. Automatic detection never requests new host access. Manual refresh can request access to the configured private-network host.
+
+Model suggestions and their source links are bundled with the extension. The extension does not fetch a remote recommendation feed, run terminal commands, or download model weights. Opening a source link visits the linked website under its own privacy policy.
+
 The extension developer does not receive local-model requests or responses.
 
 ### GitHub API
@@ -142,6 +153,7 @@ GitHub processes requests under the [GitHub General Privacy Statement](https://d
 The extension shares data only for the user-facing features described in this policy:
 
 - With OpenAI, Anthropic, or Google when the user starts cloud AI organization, including an enabled fallback
+- With providers that have saved API keys when Settings refreshes their model lists
 - With a configured custom OpenAI-compatible host when the user tests that host or starts AI organization with it
 - With GitHub when the user enables or starts a GitHub group feature
 - With a local model server when the user selects the local-model provider — on the same computer, or on the user's own network when they have granted host access for that host
@@ -169,7 +181,7 @@ The extension package contains all executable code. It does not download or exec
 | `tabGroups` | Create, update, collapse, expand, and remove tab groups. |
 | `notifications` | Show progress, results, and errors for user-started operations. |
 | `contextMenus` | Add tab-management commands to the extension action menu. |
-| AI API hosts | Send user-started requests to the selected cloud AI provider. |
+| AI API hosts | Send AI requests and refresh model lists for saved cloud keys in Settings. |
 | Optional host permission (`https://*/*`) | Allow runtime, origin-scoped HTTPS access for a configured custom OpenAI-compatible host after a user gesture. |
 | Optional host permission (`http://*/*`) | Allow runtime, origin-scoped HTTP access to a private-network host on the user's own network (for example `192.168.1.20`) after a user gesture. Chrome match patterns cannot express a private range, so the request is scoped to the single origin the user typed. The extension requests this only for private-network hosts and never for a public `http://` host, including RFC 6598 `100.64.0.0/10`. Loopback HTTP uses the static `localhost` and `127.0.0.1` permissions above. |
 | `api.github.com` | Run optional GitHub PR, Closed, and issue-label group features. |

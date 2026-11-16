@@ -3,6 +3,8 @@ set -eu
 
 node --check background.js
 node --check ai-models.js
+node --check cloud-model-discovery.js
+node --check local-model-picker.js
 node --check host-access.js
 node --check options.js
 node --test tests/*.test.js

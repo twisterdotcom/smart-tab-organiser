@@ -10,7 +10,7 @@ A Chrome extension that **deduplicates tabs**, **tidies pinned tab lists**, main
 - **Local storage**: Settings and optional credentials use `chrome.storage.local`. A credential goes only to its issuing service when you use that feature.
 - **No analytics**: No telemetry or tracking from this extension.
 - **Local AI options**: Chrome built-in AI processes prompts on your computer. The local model provider sends prompts only to a server on your computer or your own local network.
-- **Optional cloud features**: Cloud AI and GitHub tab groups send data only after you configure a provider and use the applicable feature.
+- **Optional cloud features**: Cloud AI and GitHub tab groups send data only after you configure a provider and use the applicable feature. Settings also requests model lists for saved cloud keys. These requests contain no tab data.
 - **Custom OpenAI-compatible hosts**: The extension requests host access for a custom host only when you test or use that host. Remote custom hosts must use HTTPS. Plain HTTP is allowed only for loopback hosts and private-network addresses (for example `192.168.1.20`). Shared address space (`100.64.0.0/10`) is excluded because an ISP may route it beyond your network.
 - [Privacy Policy](PRIVACY_POLICY.md)
 - [Release notes](RELEASE_NOTES.md)
@@ -27,6 +27,25 @@ A Chrome extension that **deduplicates tabs**, **tidies pinned tab lists**, main
 - **Configured GitHub labels** (optional): Group issue tabs from an ordered list of exact label names. Matching ignores letter case, and the first match wins. Each label has a Chrome group colour. You can disable label sync on toolbar clicks without disabling manual refresh.
 - **Closed issues** (optional): Move closed issue tabs to **Closed**. Closed takes priority over configured labels. The extension does not change pinned or split-view tabs.
 - **Toolbar, context menu, and shortcut**: Left-click the icon, use its menu, or assign a shortcut at `chrome://extensions/shortcuts`.
+
+## Cloud model updates
+
+The bundled model list includes GPT-6/6.1, Claude 5.5, and Gemini 3.8 Flash and 3.5 Flash-Lite.
+New installations use low-cost defaults: `gpt-6-luna`, `claude-haiku-5-5`, and `gemini-3.5-flash-lite`.
+Existing model selections remain unchanged, including IDs absent from the bundled list.
+
+When you open Settings, the extension requests model lists directly from each provider with a saved API key.
+Successful results remain in a local cache for 24 hours. **Refresh models** bypasses that cache.
+A new or changed key also triggers a refresh after you leave the key field.
+These requests send no tab data and do not generate AI responses.
+If a request fails, the cached or bundled list remains available.
+
+Discovery adds models without changing your selection or the bundled recommendations.
+Gemini discovery requires `generateContent` support and excludes known specialized model names.
+OpenAI does not report endpoint compatibility, so the extension filters names conservatively. Discovered OpenAI entries are not compatibility-tested.
+New model families or API formats can require an extension update.
+
+Sources: [OpenAI models](https://platform.openai.com/docs/models), [Claude models](https://docs.anthropic.com/en/docs/about-claude/models/overview), [Gemini models](https://ai.google.dev/gemini-api/docs/models).
 
 ## AI without a provider API key
 
@@ -56,15 +75,39 @@ Nothing to install — the model runs inside Chrome itself.
 
 The extension connects only to an OpenAI-compatible server on this computer or your own local network: `localhost`, `127.0.0.1`, or a private-network address such as `192.168.1.20`. A server elsewhere on the network needs host access, which **Test connection** requests once, or which is requested when you start organization from the toolbar. The server configuration controls local processing and any forwarding.
 
-1. Install a runtime and pull a model. For example, use `ollama pull llama3.1:8b`.
-2. **Start the server so it accepts requests from extensions.** Ollama rejects unknown origins, so it must be launched with:
+1. Install Ollama from [its official download page](https://ollama.com/download).
+2. In Settings, select **Local model server**. Leave the address blank for `http://localhost:11434/v1`.
+3. Expand **Ollama setup commands and suggestion sources**.
+4. Choose your terminal type.
+5. If Ollama already runs, quit its app or stop its service before the foreground setup.
+6. Run the displayed server command in a terminal. Keep that terminal open.
+7. In another terminal, run the displayed `ollama pull` command.
+8. Select **Test connection / Refresh models**.
+9. Choose an installed model from the dropdown, or enter its exact name manually.
 
-   ```bash
-   OLLAMA_ORIGINS="chrome-extension://*" ollama serve
-   ```
+The setup commands allow this extension's exact origin through `OLLAMA_ORIGINS`. The extension does not run terminal commands or download models.
+The setup section also includes a command for the macOS app and links for persistent service settings.
+In LM Studio, enable CORS in the server settings. Ollama pull commands do not install models into LM Studio.
 
-   In LM Studio, enable CORS in the local server settings. llama.cpp's server allows this by default.
-3. In Options, set the **server address** (default `http://localhost:11434/v1`). Then enter the exact model name that the server reports, such as `llama3.1:8b` or `qwen3:8b`. **Test connection** lists available models, and grants host access if the server is on another machine in your network.
+When you select the local provider, the extension checks the configured address. It also checks when Settings opens with that provider selected.
+Detection never scans ports or network addresses. Automatic detection never requests host permission.
+The manual refresh can request access to a configured private-network host.
+Ollama discovery shows its version, installed models, disk sizes, and currently loaded models when those endpoints are available.
+Other compatible servers still use `/v1/models`. Saved selections remain unchanged after discovery.
+
+#### Suggested small Ollama models
+
+These suggestions use official model specifications, reviewed November 16, 2026. They are starting points, not measured tab-grouping rankings.
+
+| Model | Approximate download | Selection rationale |
+| --- | --- | --- |
+| [`qwen2.5:1.5b`](https://ollama.com/library/qwen2.5:1.5b) | 986 MB | Suggested starting point. The family emphasizes JSON output. Apache 2.0 license. |
+| [`qwen2.5:3b`](https://ollama.com/library/qwen2.5:3b) | 1.9 GB | Larger alternative from the same family. Uses the Qwen license, not Apache 2.0. |
+| [`gemma3:1b`](https://ollama.com/library/gemma3:1b) | 806 MB | Lightweight, text-only alternative. Gemma terms apply. |
+
+Download sizes are not RAM requirements. Results depend on your tabs, hardware, prompt, and model settings.
+The dropdown separates installed models from suggestions. Selecting an uninstalled suggestion shows its pull command without changing the active model.
+Suggestions update with extension releases. The extension does not fetch a remote recommendation feed or treat popularity as task accuracy.
 
 Notes:
 

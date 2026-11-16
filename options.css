@@ -814,6 +814,29 @@ footer {
   overflow-wrap: anywhere;
 }
 
+.setup-notes ol {
+  padding-left: 20px;
+  line-height: 1.5;
+}
+
+.setup-command {
+  max-width: 100%;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.setup-notes .setup-command code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 /* Reorderable fallback list */
 .fallback-order-list {
   list-style: none;

@@ -3127,7 +3127,8 @@ function isOpenAiReasoningModel(modelId) {
   const id = modelId.toLowerCase();
   // o-series and gpt-5+ are reasoning-capable; gpt-4.x and gpt-4o are not
   if (/^o\d/.test(id)) return true; // o1, o3, o4 …
-  if (/^gpt-5/.test(id)) return true; // gpt-5.x, gpt-5.6-sol/terra/luna, …
+  const gptVersion = /^gpt-(\d+)/.exec(id);
+  if (gptVersion && Number(gptVersion[1]) >= 5) return true;
   return false;
 }
 
@@ -3402,28 +3403,106 @@ function localServerError(error, baseUrl) {
   return error;
 }
 
-/** List the models a local OpenAI-compatible server currently has available. */
+/** List installed models without loading models or changing server settings. */
 async function listLocalModels(rawBaseUrl) {
   const baseUrl = normalizeLocalBaseUrl(rawBaseUrl);
   requireAllowedLocalModelUrl(baseUrl);
   await requireLocalModelHostPermission(baseUrl);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
-  try {
-    const response = await fetch(`${baseUrl}/models`, { signal: controller.signal });
-    if (!response.ok) {
-      throw new Error(`Local model server returned ${response.status} for ${baseUrl}/models`);
+
+  const deadline = Date.now() + 15000;
+  const timeoutError = () => Object.assign(
+    new Error('Local model discovery timed out after 15s. Check that the server is responding.'),
+    { name: 'AbortError' }
+  );
+  const fetchJson = async (url, timeoutMs = 15000) => {
+    const remainingMs = Math.min(timeoutMs, deadline - Date.now());
+    if (remainingMs <= 0) throw timeoutError();
+    const controller = new AbortController();
+    let timer;
+    try {
+      // Bound body parsing too, not just receipt of the response headers.
+      return await Promise.race([
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            controller.abort();
+            reject(timeoutError());
+          }, remainingMs);
+        }),
+        (async () => {
+          const response = await fetch(url, { method: 'GET', redirect: 'error', signal: controller.signal });
+          if (!response.ok) {
+            throw new Error(`Local model server returned ${response.status} for ${url}`);
+          }
+          return response.json();
+        })(),
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
-    const data = await response.json();
-    const models = (data.data || data.models || [])
-      .map(m => m.id || m.name)
-      .filter(Boolean)
-      .sort();
-    return { baseUrl, models };
+  };
+  const parseModels = (data, native = false) => {
+    const catalog = native ? data?.models : (data?.data ?? data?.models);
+    if (!Array.isArray(catalog)) {
+      throw new Error('Local model server returned a malformed model list: expected an array of models.');
+    }
+    const details = new Map();
+    for (const model of catalog) {
+      const id = model && typeof model === 'object' && (native ? model.name || model.model : model.id || model.name);
+      if (typeof id !== 'string' || !id.trim()) {
+        throw new Error('Local model server returned a malformed model list: each model must have a nonempty string ID or name.');
+      }
+      const entry = { id: id.trim() };
+      if (native) {
+        if (Number.isFinite(model.size) && model.size >= 0) entry.sizeBytes = model.size;
+        if (typeof model.details?.parameter_size === 'string' && model.details.parameter_size.trim()) {
+          entry.parameterSize = model.details.parameter_size.trim();
+        }
+        if (typeof model.details?.quantization_level === 'string' && model.details.quantization_level.trim()) {
+          entry.quantization = model.details.quantization_level.trim();
+        }
+      }
+      if (!details.has(entry.id)) details.set(entry.id, entry);
+    }
+    return [...details.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  };
+
+  try {
+    let version;
+    // Do not escape a custom reverse-proxy prefix to probe the host's root.
+    const parsed = new URL(baseUrl);
+    if (parsed.pathname === '/v1') {
+      try {
+        const data = await fetchJson(`${parsed.origin}/api/version`, 2000);
+        if (typeof data?.version === 'string' && data.version.trim()) version = data.version.trim();
+      } catch { /* Native discovery is optional for compatible servers. */ }
+    }
+    let modelDetails;
+    let runningModels = [];
+    if (version) {
+      try {
+        modelDetails = parseModels(await fetchJson(`${parsed.origin}/api/tags`), true);
+      } catch (error) {
+        if (Date.now() >= deadline) throw error;
+        // Some proxies expose the version endpoint but not the native catalog.
+      }
+    }
+    if (!modelDetails) modelDetails = parseModels(await fetchJson(`${baseUrl}/models`));
+    if (version) {
+      try {
+        runningModels = parseModels(await fetchJson(`${parsed.origin}/api/ps`, 2000), true).map(model => model.id);
+      } catch { /* Loaded models are optional and do not change the installed list. */ }
+    }
+    return {
+      baseUrl,
+      models: modelDetails.map(model => model.id),
+      serverType: version ? 'ollama' : 'openai-compatible',
+      ...(version ? { version } : {}),
+      modelDetails,
+      runningModels,
+    };
   } catch (error) {
+    if (error.name === 'AbortError') throw timeoutError();
     throw localServerError(error, baseUrl);
-  } finally {
-    clearTimeout(timer);
   }
 }
 

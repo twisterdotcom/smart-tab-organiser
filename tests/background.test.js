@@ -179,6 +179,16 @@ test('AI response parsing keeps usable groups when another group has no indices'
   );
 });
 
+test('OpenAI GPT-6 and later families retain reasoning token budgets', () => {
+  const { context } = loadBackground();
+  for (const id of ['gpt-5.6-terra', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-10-mini', 'o3-mini']) {
+    assert.equal(context.isOpenAiReasoningModel(id), true, id);
+  }
+  for (const id of ['gpt-4.1-mini', 'gpt-4o', 'test-model']) {
+    assert.equal(context.isOpenAiReasoningModel(id), false, id);
+  }
+});
+
 test('the OpenAI request body receives only sanitized URLs', async () => {
   const { context } = loadBackground();
   let requestBody = null;
@@ -273,6 +283,8 @@ test('SSE parsing supports multiline data fields and standalone CR endings', asy
 
 test('local model requests reject public hosts before fetch', async () => {
   const { context } = loadBackground();
+  let fetches = 0;
+  context.fetch = async () => { fetches += 1; };
 
   await assert.rejects(
     context.listLocalModels('http://models.example.com:11434/v1'),
@@ -282,6 +294,7 @@ test('local model requests reject public hosts before fetch', async () => {
     context.listLocalModels('http://8.8.8.8:11434/v1'),
     /must be a server on this computer or your local network/
   );
+  assert.equal(fetches, 0);
 });
 
 test('local model requests reach a private-network host once host access is granted', async () => {
@@ -293,6 +306,7 @@ test('local model requests reach a private-network host once host access is gran
     return true;
   };
   context.fetch = async (url) => {
+    if (url.endsWith('/api/version')) return { ok: false, status: 404 };
     assert.equal(url, 'http://192.168.1.20:11434/v1/models');
     return { ok: true, json: async () => ({ data: [{ id: 'llama3.1:8b' }] }) };
   };
@@ -311,9 +325,8 @@ test('local model requests name the host whose permission is missing', async () 
     requested.push(origins[0]);
     return true;
   };
-  context.fetch = async () => {
-    throw new Error('Unexpected fetch');
-  };
+  let fetches = 0;
+  context.fetch = async () => { fetches += 1; };
 
   await assert.rejects(
     context.listLocalModels('http://192.168.1.20:11434/v1'),
@@ -321,6 +334,167 @@ test('local model requests name the host whose permission is missing', async () 
   );
   // Background requests are check-only; the grant needs a user gesture.
   assert.deepEqual(requested, []);
+  assert.equal(fetches, 0);
+});
+
+test('local discovery returns Ollama installed details, loaded models, and version without side effects', async () => {
+  const { chrome, context } = loadBackground();
+  const requests = [];
+  let writes = 0;
+  let grants = 0;
+  chrome.storage.local.set = async () => { writes += 1; };
+  chrome.permissions.request = async () => { grants += 1; };
+  context.fetch = async (url, init) => {
+    requests.push(url);
+    assert.equal(init.method, 'GET');
+    assert.equal(init.redirect, 'error');
+    const payloads = {
+      '/api/version': { version: ' 0.12.1 ' },
+      '/api/tags': { models: [
+        { name: 'llama:8b', size: 4800000000, details: { parameter_size: '8B', quantization_level: 'Q4_K_M' } },
+        { name: 'llama:8b' },
+        { name: 'gemma:4b' },
+      ] },
+      '/api/ps': { models: [{ model: 'llama:8b' }, { name: 'llama:8b' }] },
+    };
+    const data = payloads[new URL(url).pathname];
+    assert.ok(data, url);
+    return { ok: true, json: async () => data };
+  };
+  const result = await context.listLocalModels('');
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), {
+    baseUrl: 'http://localhost:11434/v1',
+    models: ['gemma:4b', 'llama:8b'],
+    serverType: 'ollama',
+    version: '0.12.1',
+    modelDetails: [
+      { id: 'gemma:4b' },
+      { id: 'llama:8b', sizeBytes: 4800000000, parameterSize: '8B', quantization: 'Q4_K_M' },
+    ],
+    runningModels: ['llama:8b'],
+  });
+  assert.equal(requests.length, 3);
+  assert.equal(writes, 0);
+  assert.equal(grants, 0);
+});
+
+test('local discovery keeps generic compatibility when optional version probes fail', async () => {
+  for (const failure of ['network', 'http', 'json', 'blank', 'wrong-type']) {
+    const { context } = loadBackground();
+    const requests = [];
+    context.fetch = async (url, init) => {
+      requests.push(url);
+      assert.equal(init.redirect, 'error');
+      if (url.endsWith('/api/version')) {
+        if (failure === 'network') throw new Error('unreachable');
+        return {
+          ok: failure !== 'http', status: 404,
+          json: async () => {
+            if (failure === 'json') throw new SyntaxError('invalid JSON');
+            return { version: failure === 'blank' ? ' ' : 123 };
+          },
+        };
+      }
+      assert.ok(url.endsWith('/v1/models'));
+      return { ok: true, json: async () => ({ data: [{ id: ' z ' }, { id: 'a' }, { id: 'z' }] }) };
+    };
+    assert.deepEqual(JSON.parse(JSON.stringify(await context.listLocalModels(''))), {
+      baseUrl: 'http://localhost:11434/v1', models: ['a', 'z'],
+      serverType: 'openai-compatible', modelDetails: [{ id: 'a' }, { id: 'z' }], runningModels: [],
+    }, failure);
+    assert.equal(requests.length, 2);
+  }
+});
+
+test('local discovery does not probe native endpoints outside the exact /v1 path', async () => {
+  for (const suffix of ['/proxy/v1', '/v2']) {
+    const { context } = loadBackground();
+    const requests = [];
+    context.fetch = async (url) => {
+      requests.push(url);
+      return { ok: true, json: async () => ({ models: [{ name: 'model' }] }) };
+    };
+    const baseUrl = `http://localhost:11434${suffix}`;
+    const result = await context.listLocalModels(baseUrl);
+    assert.deepEqual(requests, [`${baseUrl}/models`]);
+    assert.equal(result.serverType, 'openai-compatible');
+  }
+});
+
+test('Ollama tags failures fall back to compatible models and loaded failures are optional', async () => {
+  for (const tags of [null, { models: 'invalid' }, { models: [{ name: 123 }] }]) {
+    const { context } = loadBackground();
+    context.fetch = async (url) => {
+      if (url.endsWith('/api/version')) return { ok: true, json: async () => ({ version: '1.0' }) };
+      if (url.endsWith('/api/tags')) return { ok: !!tags, status: 404, json: async () => tags };
+      if (url.endsWith('/api/ps')) throw new Error('optional endpoint unavailable');
+      assert.ok(url.endsWith('/v1/models'));
+      return { ok: true, json: async () => ({ data: [{ id: 'installed' }] }) };
+    };
+    const result = await context.listLocalModels('');
+    assert.equal(result.serverType, 'ollama');
+    assert.equal(result.version, '1.0');
+    assert.deepEqual(Array.from(result.models), ['installed']);
+    assert.deepEqual(Array.from(result.runningModels), []);
+  }
+});
+
+test('local discovery accepts empty installed lists but rejects malformed catalogs', async () => {
+  for (const native of [false, true]) {
+    for (const catalog of [[], null, {}, 'bad', [{ id: 123 }], [null], [{ name: '' }]]) {
+      const { context } = loadBackground();
+      context.fetch = async (url) => {
+        if (url.endsWith('/api/version')) return { ok: native, json: async () => ({ version: '1' }) };
+        if (url.endsWith('/api/ps')) return { ok: true, json: async () => ({ models: [] }) };
+        return { ok: true, json: async () => native ? { models: catalog } : { data: catalog } };
+      };
+      if (Array.isArray(catalog) && catalog.length === 0) {
+        const result = await context.listLocalModels('');
+        assert.deepEqual(Array.from(result.models), []);
+        assert.deepEqual(Array.from(result.modelDetails), []);
+      } else {
+        await assert.rejects(context.listLocalModels(''), /malformed model list/);
+      }
+    }
+  }
+});
+
+test('local discovery bounds optional probes and reports its own 15s timeout, including stalled bodies', async () => {
+  const { context } = loadBackground();
+  const timers = new Map();
+  const budgets = [];
+  let nextTimer = 0;
+  context.setTimeout = (callback, delay) => {
+    budgets.push(delay);
+    timers.set(++nextTimer, callback);
+    return nextTimer;
+  };
+  context.clearTimeout = id => timers.delete(id);
+  const signals = [];
+  context.fetch = async (_url, init) => {
+    signals.push(init.signal);
+    return { ok: true, json: () => new Promise(() => {}) };
+  };
+  const pending = context.listLocalModels('');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(budgets[0], 2000);
+  timers.get(1)();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(budgets[1] > 0 && budgets[1] <= 15000);
+  const rejected = assert.rejects(pending, error => /discovery timed out after 15s/.test(error.message) && !/180s/.test(error.message));
+  timers.get(2)();
+  await rejected;
+  assert.ok(signals.every(signal => signal.aborted));
+  assert.equal(timers.size, 0);
+});
+
+test('local discovery refuses redirects rather than following them', async () => {
+  const { context } = loadBackground();
+  context.fetch = async (_url, init) => {
+    assert.equal(init.redirect, 'error');
+    return { ok: false, status: 302 };
+  };
+  await assert.rejects(context.listLocalModels(''), /returned 302/);
 });
 
 test('a user gesture can grant a private-network local model host without opening Options', async () => {
@@ -458,6 +632,7 @@ test('local model requests keep loopback working without any host permission', a
     return false;
   };
   context.fetch = async (url) => {
+    if (url.endsWith('/api/version')) return { ok: false, status: 404 };
     assert.equal(url, 'http://localhost:11434/v1/models');
     return { ok: true, json: async () => ({ data: [{ id: 'llama3.1:8b' }] }) };
   };
